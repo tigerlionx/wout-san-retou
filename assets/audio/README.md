@@ -4,7 +4,7 @@
 * `local/`: **third-party material, not committed** (see `.gitignore`; `build.rs` packs it into the executable instead):
   gunshots and knife (from SoundEffectsFactory recordings), a distant gunfight bed, and the suspense music remixed
   from the track "La Misere Pa Douce" by Ti Roro (Lio S.A.).
-  The owner says these may be used freely; keep the licences on file. Without these files the game still runs, silently.
+  The owner confirms the right to use these. Without these files the game still runs, silently.
 
 Rebuild `local/` and `synth/` from the original recordings:
 
