@@ -14,6 +14,7 @@ mod ai;
 mod audio;
 mod autoplay;
 mod character;
+mod embedded;
 mod level;
 mod level2;
 mod level3;
@@ -237,6 +238,8 @@ fn main() {
         .filter(|p| p.is_dir())
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| concat!(env!("CARGO_MANIFEST_DIR"), "/assets").into());
+    // The assets are packed into the executable (see build.rs); the folder is the fallback for anything not packed.
+    app.add_plugins(embedded::EmbeddedAssetsPlugin { folder: assets.clone() });
     app.add_plugins(DefaultPlugins.set(AssetPlugin {
         // Audio lives in assets/audio (see src/audio.rs).
         file_path: assets,

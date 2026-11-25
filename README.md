@@ -31,12 +31,21 @@ cargo run --release        # the first build takes several minutes
 | H | drink from a bottle | M | music on/off |
 | F1 | hide the controls | F9 | leave a note for the developer |
 
-### Missing files
+### Characters and sound are packed into the game
 
-The repository does **not** include the character models (`assets/mixamo`) or the third-party sound and music
-(`assets/audio/local`), which are not ours to redistribute. See [THIRD_PARTY.md](THIRD_PARTY.md). Without them the characters
-will be missing and the game will be silent apart from the generated sounds in `assets/audio/synth`.
-`tools/make_characters.py` rebuilds the models from Mixamo downloads (Blender needed); `tools/build_audio.py` rebuilds the audio.
+The character models and animations come from [Mixamo](https://www.mixamo.com), which is free with an Adobe account. The
+music and sound effects are third-party recordings and remixes. None of these raw files are in this repository, so nobody
+can pull them out of it: they stay out of git, and `build.rs` packs them **inside the program file** when you build.
+
+* **Built on the author's machine:** the executable contains every model, animation, sound, font and sigil, so the game
+  is one file with all of its features. Run it from anywhere.
+* **Built from a fresh clone:** the Mixamo and third-party files are not there, so they are not packed. The game still runs,
+  with the characters missing and only the generated sounds (`assets/audio/synth`). To get everything: download the
+  characters from Mixamo and run `tools/make_characters.py` (Blender needed), run `tools/build_audio.py` for the audio
+  (see `assets/audio/README.md`), then `cargo build --release`. The build prints `embedding N asset files`.
+* Anything not packed is still read from the `assets/` folder next to the executable, or the one beside `Cargo.toml`.
+
+See [THIRD_PARTY.md](THIRD_PARTY.md) for the terms.
 
 ## Look at it without playing
 

@@ -12,14 +12,16 @@ What is in the repository, and what is deliberately left out.
 | Synthesised sounds | `assets/audio/synth/` | made for this game by `tools/build_audio.py` |
 | Vever sigils | `assets/veve/` | drawn for this game by `tools/make_veve.py` (traditional symbols, redrawn) |
 
-## Left out on purpose (git-ignored)
+## Packed into the built game, not in the repository (git-ignored)
+
+`build.rs` embeds these into the executable, so they ship inside the game and are not loose, reusable files. They are not in git.
 
 | Material | Where it goes | Why it is not here |
 |---|---|---|
-| Character models and animations from Mixamo | `assets/mixamo/` | Mixamo content is licensed by Adobe for use in your own projects; check their terms before redistributing, and do not publish the raw files. |
-| Gunshot and knife recordings, a gunfight bed | `assets/audio/local/` | Recordings from third-party sound libraries. Check each licence. |
-| Suspense music remixed from a Ti Roro track | `assets/audio/local/` | Needs the rights holder's permission before any release. |
-| Introduction music remixed from a ritual recording by Jericho 666 | `assets/audio/local/` | Needs the rights holder's permission before any release. |
+| Character models and animations from Mixamo | `assets/mixamo/` | Free from Mixamo (Adobe account needed) and allowed in games. Adobe's rule, as reported on its community forum, is to ship them inside the project and not as loose files, so they are embedded in the executable and the raw files are never committed. Check Adobe's current Mixamo terms before a release. |
+| Gunshot and knife recordings, a gunfight bed | `assets/audio/local/` | Recordings from third-party sound libraries. The project owner states they may be used freely; that has not been checked by the assistant, so keep each licence on file. |
+| Suspense music remixed from a Ti Roro track | `assets/audio/local/` | Used with the project owner's statement that the audio may be used freely; the rights have not been verified independently, so confirm the licence before a public release. |
+| Introduction music remixed from a ritual recording by Jericho 666 | `assets/audio/local/` | Used with the project owner's statement that the audio may be used freely; the rights have not been verified independently, so confirm the licence before a public release. |
 
 ## Images
 
