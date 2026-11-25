@@ -1,0 +1,4 @@
+FiraMono-Medium.ttf is Fira Mono, copyright The Mozilla Foundation and Telefonica S.A.,
+licensed under the SIL Open Font License 1.1 (https://openfontlicense.org).
+It is used because Bevy's built-in default font has no accented letters,
+which Haitian Creole text needs (è, ò).

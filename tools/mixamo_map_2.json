@@ -1,0 +1,29 @@
+{
+  "character": {},
+  "clips": {
+    "Crouch To Prone.fbx": "prone_down",
+    "Prone Idle.fbx": "prone_idle",
+    "Prone Forward.fbx": "prone_crawl",
+    "Prone To Crouch Transition.fbx": "prone_up",
+    "Prone Firing Rifle.fbx": "prone_fire",
+    "Idle Crouching.fbx": "crouch_idle",
+    "Idle Crouching Aiming.fbx": "crouch_aim",
+    "Crouch To Standing.fbx": "crouch_up",
+    "Rifle Crouch Walk.fbx": "crouch_walk_rifle",
+    "Standing Jump Running Landing.fbx": "land",
+    "Jumping Down.fbx": "land_hard",
+    "Running Jump.fbx": "run_jump",
+    "Walk With Rifle.fbx": "walk_rifle",
+    "Rifle Aiming Idle.fbx": "aim_idle",
+    "Pistol Walk Arc.fbx": "pistol_walk",
+    "Pistol Run Arc.fbx": "pistol_run",
+    "Zombie Run.fbx": "zombie_run",
+    "Zombie Crawl.fbx": "zombie_crawl",
+    "Zombie Attack.fbx": "zombie_attack",
+    "Zombie Reaction Hit.fbx": "zombie_hit",
+    "Zombie Stand Up.fbx": "zombie_rise",
+    "Standing React Small From Front.fbx": "hit_small",
+    "Hit On The Back.fbx": "hit_back",
+    "Prone Death.fbx": "death_prone"
+  }
+}
