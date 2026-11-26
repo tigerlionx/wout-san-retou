@@ -85,12 +85,10 @@ pub fn setup_camera(
         brightness: 320.0,
         ..default()
     });
-    commands.spawn((
+    let mut camera = commands.spawn((
         GameCamera,
         Camera3d::default(),
-        Hdr,
         Tonemapping::TonyMcMapface,
-        Bloom::NATURAL,
         // 4x MSAA at Retina resolution is too heavy for laptop GPUs; FXAA softens the ink edges for far less.
         // WSR_AA=msaa brings the old look back for comparison.
         if std::env::var("WSR_AA").is_ok_and(|v| v == "msaa") { Msaa::Sample4 } else { Msaa::Off },
@@ -104,5 +102,28 @@ pub fn setup_camera(
         },
         Transform::from_xyz(0.0, 14.0, 40.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
+    // HDR and bloom are skipped in the browser: they are too heavy for WebGL on a laptop GPU.
+    #[cfg(not(target_arch = "wasm32"))]
+    camera.insert((Hdr, Bloom::NATURAL));
+    #[cfg(target_arch = "wasm32")]
+    let _ = &mut camera;
+}
+
+/// Browser build: no shadow maps (the sun's cascades and the point-light cubes are the heaviest part of a frame).
+#[cfg(target_arch = "wasm32")]
+pub fn web_lite(
+    mut sun: Query<&mut DirectionalLight, Added<DirectionalLight>>,
+    mut points: Query<&mut PointLight, Added<PointLight>>,
+    mut spots: Query<&mut SpotLight, Added<SpotLight>>,
+) {
+    for mut l in &mut sun {
+        l.shadow_maps_enabled = false;
+    }
+    for mut l in &mut points {
+        l.shadow_maps_enabled = false;
+    }
+    for mut l in &mut spots {
+        l.shadow_maps_enabled = false;
+    }
 }
 

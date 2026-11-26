@@ -31,6 +31,11 @@ fn main() {
     let assets = manifest.join("assets");
     let mut files = Vec::new();
     walk(&assets, &assets, &mut files);
+    // The web build must stay small: it packs only what a fresh clone has (no Mixamo models, no third-party audio),
+    // and the game falls back to its own built characters.
+    if env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|a| a == "wasm32") {
+        files.retain(|(rel, _)| !rel.starts_with("mixamo/") && !rel.starts_with("audio/local/"));
+    }
 
     let mut src = String::from("pub static EMBEDDED: &[(&str, &[u8])] = &[\n");
     for (rel, path) in &files {

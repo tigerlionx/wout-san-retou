@@ -7,9 +7,21 @@ license = "PolyForm-Noncommercial-1.0.0"
 [dependencies]
 bevy = { version = "0.20.1", features = ["wav", "jpeg"] }
 
+# In the browser: WebGL2 rendering and the web platform layer.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy = { version = "0.20.1", features = ["webgl2", "web", "wav", "jpeg"] }
+
 # Bevy runs far too slowly unoptimized: optimize deps fully, our code lightly.
 [profile.dev]
 opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# Web release: small and fast to download.
+[profile.web]
+inherits = "release"
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

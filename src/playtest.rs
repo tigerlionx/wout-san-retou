@@ -10,12 +10,13 @@ use std::io::Write;
 #[derive(Resource)]
 pub struct SessionLog {
     file: Option<std::fs::File>,
-    start: std::time::Instant,
+    start: bevy::platform::time::Instant,
 }
 
 impl SessionLog {
     pub fn open() -> Self {
-        let off = std::env::var_os("WSR_NOLOG").is_some() || std::env::var_os("WSR_AUTOPLAY").is_some();
+        // The web build has no folder to write to.
+        let off = cfg!(target_arch = "wasm32") || std::env::var_os("WSR_NOLOG").is_some() || std::env::var_os("WSR_AUTOPLAY").is_some();
         let dir = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("playtest_logs")))
@@ -29,7 +30,7 @@ impl SessionLog {
                 .unwrap_or(0);
             std::fs::File::create(dir.join(format!("session-{stamp}.csv"))).ok()
         };
-        let mut log = Self { file, start: std::time::Instant::now() };
+        let mut log = Self { file, start: bevy::platform::time::Instant::now() };
         log.raw("seconds,event,level,x,z,health,weight,kills,caught,woken,note");
         log
     }

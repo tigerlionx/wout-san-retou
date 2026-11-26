@@ -245,14 +245,26 @@ fn main() {
         file_path: assets,
         ..default()
     }).set(WindowPlugin {
-        primary_window: Some(Window {
+        primary_window: Some({
+            let mut window = Window {
             title: "Wout San Retou".into(),
+            // The web build draws into <canvas id="bevy"> and fills its parent.
+            canvas: Some("#bevy".into()),
+            fit_canvas_to_parent: true,
+            prevent_default_event_handling: true,
             window_level: if autoplay {
                 bevy::window::WindowLevel::AlwaysOnTop
             } else {
                 bevy::window::WindowLevel::Normal
             },
             ..default()
+            };
+            // The browser draws at CSS pixels, not Retina pixels: a quarter of the work on a laptop screen.
+            #[cfg(target_arch = "wasm32")]
+            window.resolution.set_scale_factor_override(Some(1.0));
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = &mut window;
+            window
         }),
         ..default()
     }))
@@ -506,8 +518,10 @@ fn main() {
             poster::poster_lighting.after(update_lighting),
         )
             .run_if(|| poster::on()),
-    )
-    .run();
+    );
+    #[cfg(target_arch = "wasm32")]
+    app.add_systems(Update, style::web_lite);
+    app.run();
 }
 
 // ------------------------------------------------------------ text screens
