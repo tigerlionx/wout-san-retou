@@ -52,10 +52,17 @@ See [THIRD_PARTY.md](THIRD_PARTY.md) for the terms.
 `WSR_AUTOPLAY=1 cargo run --release` plays a scripted level offscreen and writes screenshots to `playtest/`
 (`WSR_LEVEL2=1` to `WSR_LEVEL6=1` pick a level). `WSR_POSTER=1` renders the key art; see `tools/make_poster.py`.
 
+## Roblox edition
+
+[`roblox/`](roblox) holds a small, **non-violent** Roblox version: a new game inspired by this one, not a port. You are Ro at
+night in a gang's compound: cut the power, sneak past the guards, call three Lost kids by name and lead them out. No weapons,
+no gore, no Vodou imagery, no Kreyol and none of this game's models or sound. Open `roblox/WoutSanRetou.rbxlx` in Roblox Studio
+and press Play. **It has not been run in Studio yet**, so expect bugs; see [roblox/README.md](roblox/README.md).
+
 ## Folders
 
 * `src/`: the game. `tools/`: Python and Blender scripts for models, audio, vever sigils and the poster.
-* `design/`: the level plans and a Three.js preview of the compound. `promo/`: poster and social image.
+* `design/`: the level plans and a Three.js preview of the compound. `promo/`: poster and social image. `roblox/`: the Roblox edition.
 
 ## Licence
 

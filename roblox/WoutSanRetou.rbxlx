@@ -1,0 +1,1526 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4"><Meta name="ExplicitAutoJoints">true</Meta><Item class="Workspace" referent="RBX0"><Properties><string name="Name">Workspace</string></Properties></Item><Item class="Lighting" referent="RBX1"><Properties><string name="Name">Lighting</string></Properties></Item><Item class="ReplicatedStorage" referent="RBX3"><Properties><string name="Name">ReplicatedStorage</string></Properties><Item class="ModuleScript" referent="RBX2"><Properties><string name="Name">WSRConfig</string><ProtectedString name="Source"><![CDATA[-- Shared settings for Wout San Retou (Roblox edition). Every number you may want to tune is here.
+local Config = {}
+
+Config.Title = "Wout San Retou: The Road of No Return"
+
+-- Studs per second. The server sets these; the client only asks for a stance.
+Config.Speed = { walk = 14, sprint = 22, sneak = 7 }
+
+-- Weight: the cost of using force. It slows you a little and calls an Echo that follows you.
+Config.Weight = {
+	slowPerPoint = 0.03,
+	minMultiplier = 0.75,
+	maxEchoes = 6,
+	echoSpeed = 9,
+	echoTouch = 4,
+	echoSlowSeconds = 3,
+	echoSlowMultiplier = 0.6,
+	echoRespawnSeconds = 10,
+}
+
+Config.Guard = {
+	patrolSpeed = 8,
+	investigateSpeed = 12,
+	chaseSpeed = 17,
+	sightRange = 45, -- studs, in the dark with all lights on
+	sightHalfAngle = 55, -- degrees either side of where the guard faces
+	closeSense = 7, -- inside this a guard notices you from any direction
+	catchDistance = 4,
+	loseSeconds = 4, -- chase ends this long after the guard last saw you
+}
+
+-- How much each stance changes how far a guard can see you.
+Config.StanceSight = { walk = 1, sprint = 1.3, sneak = 0.5 }
+-- How far a guard can hear you, but only while you are moving.
+Config.Hearing = { walk = 12, sprint = 36, sneak = 3 }
+
+-- Cutting a generator makes the yard darker, so guards see less far: each one removes this share of sight range.
+Config.DarknessPerGenerator = 0.15
+
+-- The blinding flash. It does no damage, but using it on someone adds Weight.
+Config.Flash = { range = 26, halfAngle = 35, stunSeconds = 6, cooldown = 8, missCooldown = 2, weightCost = 1 }
+
+Config.Hold = { generator = 3, call = 2 } -- seconds to hold E
+
+-- The Lost: kids caught in the gang. They are reached by name, never fought.
+Config.Kids = {
+	{ name = "Wilson", age = 14, line = "Wilson. Your mother is still waiting at the school gate." },
+	{ name = "Marie", age = 13, line = "Marie. Your little brother asks about you every day." },
+	{ name = "Jephte", age = 16, line = "Jephte. Your coach kept your place on the team." },
+}
+
+return Config
+]]></ProtectedString></Properties></Item></Item><Item class="ServerStorage" referent="RBX12"><Properties><string name="Name">ServerStorage</string></Properties><Item class="Folder" referent="RBX11"><Properties><string name="Name">WSR</string></Properties><Item class="ModuleScript" referent="RBX4"><Properties><string name="Name">Echoes</string><ProtectedString name="Source"><![CDATA[-- Echoes: every point of Weight calls a faint figure that walks toward you. Touching one slows you for a moment.
+-- They are not enemies you can fight; they are what you carry.
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local Config = require(ReplicatedStorage:WaitForChild("WSRConfig"))
+local WSR = ServerStorage:WaitForChild("WSR")
+local Round = require(WSR:WaitForChild("Round"))
+local PlayerState = require(WSR:WaitForChild("PlayerState"))
+local NPC = require(WSR:WaitForChild("NPC"))
+
+local M = {}
+
+local lists = {} -- [player] = array of echoes
+local pending = {} -- [player] = number being built right now
+
+local function ghostify(model)
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Material = Enum.Material.ForceField
+			d.Color = Color3.fromRGB(150, 160, 190)
+			if d.Name ~= "HumanoidRootPart" then
+				d.CanCollide = false
+			end
+			d.CanQuery = false
+		elseif d:IsA("Decal") then
+			d.Transparency = 0.6
+		end
+	end
+end
+
+local function remove(player, echo)
+	local list = lists[player]
+	if list then
+		local idx = table.find(list, echo)
+		if idx then
+			table.remove(list, idx)
+		end
+	end
+	if echo.model then
+		echo.model:Destroy()
+	end
+end
+
+function M.start(world, roundId)
+	lists = {}
+	pending = {}
+	local folder = Instance.new("Folder")
+	folder.Name = "Echoes"
+	folder.Parent = world.folder
+
+	local function sync(player)
+		if Round.id ~= roundId then
+			return
+		end
+		local target = math.min(PlayerState.get(player).weight, Config.Weight.maxEchoes)
+		lists[player] = lists[player] or {}
+		pending[player] = pending[player] or 0
+		local list = lists[player]
+		while #list > target do
+			remove(player, list[#list])
+		end
+		while #list + pending[player] < target do
+			pending[player] += 1
+			task.spawn(function()
+				-- Pick a spawn point away from the player.
+				local root = PlayerState.getRoot(player)
+				local options = {}
+				for _, s in ipairs(world.echoSpawns) do
+					if not root or (s - root.Position).Magnitude > 30 then
+						table.insert(options, s)
+					end
+				end
+				local pos = options[math.random(1, math.max(#options, 1))] or world.echoSpawns[1]
+				local model, hum, hrp = NPC.make({
+					name = "Echo",
+					parent = folder,
+					pos = pos,
+					skin = Color3.fromRGB(150, 160, 190),
+					shirt = Color3.fromRGB(150, 160, 190),
+					pants = Color3.fromRGB(150, 160, 190),
+					speed = Config.Weight.echoSpeed,
+					tag = false,
+				})
+				ghostify(model)
+				pending[player] -= 1
+				if Round.id ~= roundId or not player.Parent then
+					model:Destroy()
+					return
+				end
+				table.insert(list, { model = model, hum = hum, hrp = hrp })
+			end)
+		end
+	end
+
+	PlayerState.onWeight(function(player)
+		sync(player)
+	end)
+
+	task.spawn(function()
+		while Round.id == roundId do
+			for player, list in pairs(lists) do
+				local root = PlayerState.getRoot(player)
+				if root and PlayerState.isActive(player) then
+					for _, echo in ipairs({ table.unpack(list) }) do
+						if echo.hrp and echo.hrp.Parent then
+							if NPC.flatDist(echo.hrp.Position, root.Position) <= Config.Weight.echoTouch then
+								PlayerState.slow(player, Config.Weight.echoSlowSeconds)
+								remove(player, echo)
+								task.delay(Config.Weight.echoRespawnSeconds, sync, player)
+							else
+								echo.hum:MoveTo(root.Position)
+							end
+						end
+					end
+				end
+			end
+			task.wait(0.25)
+		end
+	end)
+end
+
+return M
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX5"><Properties><string name="Name">Guards</string><ProtectedString name="Source"><![CDATA[-- The gang's guards. They patrol, notice you by sight and sound, investigate, chase and give up.
+-- They never hurt anyone: being caught sends you back to the road (see Main).
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Config = require(ReplicatedStorage:WaitForChild("WSRConfig"))
+local ServerStorage = game:GetService("ServerStorage")
+local WSR = ServerStorage:WaitForChild("WSR")
+local Round = require(WSR:WaitForChild("Round"))
+local PlayerState = require(WSR:WaitForChild("PlayerState"))
+local NPC = require(WSR:WaitForChild("NPC"))
+
+local M = {}
+M.onCaught = nil -- set by Main: function(player)
+
+local guards = {}
+local npcFolder = nil
+
+local function setState(g, state)
+	if g.state ~= state then
+		g.state = state
+		g.token += 1
+	end
+end
+
+local function lightMultiplier()
+	local off = workspace:GetAttribute("GensOff") or 0
+	return math.max(0.3, 1 - Config.DarknessPerGenerator * off)
+end
+
+local function hasLineOfSight(g, targetPos, char)
+	local origin = g.head.Position
+	local result = workspace:Raycast(origin, targetPos - origin, g.rayParams)
+	return result == nil or (char ~= nil and result.Instance:IsDescendantOf(char))
+end
+
+-- One look around. Updates awareness (0 to 1) and decides the next state.
+local function sense(g, dt)
+	local now = os.clock()
+	if g.state == "Stunned" then
+		if now >= g.stunnedUntil then
+			g.awareness = 0.2
+			setState(g, "Patrol")
+		end
+		return 0
+	end
+	if not g.head or not g.head.Parent then
+		return 0
+	end
+
+	local seenPlayer, seenDist, heardPos
+	local range = 0
+	for _, p in ipairs(Players:GetPlayers()) do
+		if PlayerState.isActive(p) then
+			local root = PlayerState.getRoot(p)
+			local stance = PlayerState.get(p).stance
+			local offset = root.Position - g.head.Position
+			local dist = offset.Magnitude
+			range = Config.Guard.sightRange * Config.StanceSight[stance] * lightMultiplier()
+			local visible = false
+			if dist <= math.max(range, Config.Guard.closeSense) then
+				local close = dist <= Config.Guard.closeSense
+				local cosAngle = dist > 0.01 and g.head.CFrame.LookVector:Dot(offset.Unit) or 1
+				if close or cosAngle >= math.cos(math.rad(Config.Guard.sightHalfAngle)) then
+					visible = hasLineOfSight(g, root.Position, p.Character)
+				end
+			end
+			if visible and (not seenDist or dist < seenDist) then
+				seenPlayer, seenDist = p, dist
+			end
+			local flatSpeed = Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z).Magnitude
+			if flatSpeed > 3 and dist <= Config.Hearing[stance] then
+				heardPos = root.Position
+			end
+		end
+	end
+
+	if seenPlayer then
+		local closeness = 1 - math.clamp(seenDist / math.max(range, 1), 0, 1)
+		g.awareness += dt * (0.7 + 1.2 * closeness)
+		g.lastKnown = PlayerState.getRoot(seenPlayer).Position
+		g.lastSeen = now
+		g.target = seenPlayer
+	elseif heardPos then
+		g.awareness += dt * 0.45
+		g.lastKnown = heardPos
+	else
+		g.awareness -= dt * 0.2
+	end
+	g.awareness = math.clamp(g.awareness, 0, 1)
+
+	if g.state == "Chase" then
+		if seenPlayer and seenDist <= Config.Guard.catchDistance and M.onCaught then
+			M.onCaught(seenPlayer)
+		elseif now - g.lastSeen > Config.Guard.loseSeconds then
+			g.awareness = 0.5
+			setState(g, "Search")
+		end
+	else
+		if g.awareness >= 1 then
+			setState(g, "Chase")
+		elseif g.awareness >= 0.35 and g.state == "Patrol" then
+			setState(g, "Investigate")
+		elseif g.awareness < 0.1 and g.state == "Investigate" then
+			setState(g, "Patrol")
+		end
+	end
+	return g.awareness
+end
+
+local function stillValid(g, token, roundId)
+	return Round.id == roundId and g.token == token
+end
+
+-- The movement thread: acts on whatever state the senses have chosen.
+local function run(g, roundId)
+	while Round.id == roundId and g.model.Parent do
+		local state, token = g.state, g.token
+		local valid = function()
+			return stillValid(g, token, roundId)
+		end
+		if state == "Stunned" then
+			g.hum.WalkSpeed = 0
+			task.wait(0.2)
+		elseif state == "Patrol" then
+			g.hum.WalkSpeed = Config.Guard.patrolSpeed
+			NPC.goTo(g.hum, g.hrp, g.route[g.routeIndex], valid, 25)
+			if valid() then
+				g.routeIndex = g.routeIndex % #g.route + 1
+				local t0 = os.clock()
+				while valid() and os.clock() - t0 < 1 do
+					task.wait(0.1)
+				end
+			end
+		elseif state == "Investigate" or state == "Search" then
+			g.hum.WalkSpeed = Config.Guard.investigateSpeed
+			NPC.goTo(g.hum, g.hrp, g.lastKnown, valid, 12)
+			if valid() then
+				local t0 = os.clock()
+				while valid() and os.clock() - t0 < 3 do
+					task.wait(0.1)
+				end
+				if valid() then
+					g.awareness = math.min(g.awareness, 0.2)
+					setState(g, "Patrol")
+				end
+			end
+		elseif state == "Chase" then
+			g.hum.WalkSpeed = Config.Guard.chaseSpeed
+			if os.clock() - g.lastSeen < 0.5 then
+				g.hum:MoveTo(g.lastKnown)
+				task.wait(0.12)
+			else
+				NPC.goTo(g.hum, g.hrp, g.lastKnown, valid, 4)
+			end
+		else
+			task.wait(0.2)
+		end
+	end
+end
+
+function M.start(world, roundId)
+	guards = {}
+	npcFolder = Instance.new("Folder")
+	npcFolder.Name = "Guards"
+	npcFolder.Parent = world.folder
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.FilterDescendantsInstances = { npcFolder }
+
+	for i, route in ipairs(world.routes) do
+		local model, hum, hrp = NPC.make({
+			name = "Guard " .. i,
+			parent = npcFolder,
+			pos = route[1],
+			skin = Color3.fromRGB(141, 85, 36),
+			shirt = Color3.fromRGB(40, 40, 46),
+			pants = Color3.fromRGB(30, 30, 34),
+			speed = Config.Guard.patrolSpeed,
+			tag = false,
+		})
+		local head = model:FindFirstChild("Head")
+		if head then
+			local lamp = Instance.new("SpotLight")
+			lamp.Face = Enum.NormalId.Front
+			lamp.Angle = 55
+			lamp.Range = 40
+			lamp.Brightness = 3
+			lamp.Color = Color3.fromRGB(255, 235, 190)
+			lamp.Parent = head
+		end
+		local g = {
+			model = model, hum = hum, hrp = hrp, head = head or hrp, route = route, routeIndex = 2,
+			state = "Patrol", token = 0, awareness = 0, lastKnown = route[1], lastSeen = 0,
+			stunnedUntil = 0, rayParams = rayParams,
+		}
+		table.insert(guards, g)
+		task.spawn(run, g, roundId)
+	end
+
+	-- One shared thread for the senses, ten times a second.
+	task.spawn(function()
+		local dt = 0.1
+		while Round.id == roundId do
+			local highest = 0
+			for _, g in ipairs(guards) do
+				highest = math.max(highest, sense(g, dt))
+			end
+			workspace:SetAttribute("Alert", highest)
+			task.wait(dt)
+		end
+	end)
+end
+
+-- Everyone forgets the chase (used after a player is caught).
+function M.calmAll()
+	for _, g in ipairs(guards) do
+		if g.state ~= "Stunned" then
+			g.awareness = 0
+			setState(g, "Patrol")
+		end
+	end
+end
+
+-- The flash: blinds guards in front of the player, within range and in plain sight. Returns how many.
+function M.flash(player)
+	local root = PlayerState.getRoot(player)
+	if not root then
+		return 0
+	end
+	local count = 0
+	local cosLimit = math.cos(math.rad(Config.Flash.halfAngle))
+	for _, g in ipairs(guards) do
+		if g.state ~= "Stunned" and g.hrp and g.hrp.Parent then
+			local offset = g.hrp.Position - root.Position
+			local dist = offset.Magnitude
+			if dist <= Config.Flash.range and dist > 0.01 and root.CFrame.LookVector:Dot(offset.Unit) >= cosLimit then
+				local params = RaycastParams.new()
+				params.FilterType = Enum.RaycastFilterType.Exclude
+				params.FilterDescendantsInstances = { player.Character }
+				local result = workspace:Raycast(root.Position, offset, params)
+				if result == nil or result.Instance:IsDescendantOf(g.model) then
+					g.stunnedUntil = os.clock() + Config.Flash.stunSeconds
+					setState(g, "Stunned")
+					g.hum:MoveTo(g.hrp.Position)
+					count += 1
+				end
+			end
+		end
+	end
+	return count
+end
+
+return M
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX6"><Properties><string name="Name">Kids</string><ProtectedString name="Source"><![CDATA[-- The Lost: kids caught in the gang. You reach them by calling their name; then they follow you to the road.
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local Config = require(ReplicatedStorage:WaitForChild("WSRConfig"))
+local WSR = ServerStorage:WaitForChild("WSR")
+local Round = require(WSR:WaitForChild("Round"))
+local PlayerState = require(WSR:WaitForChild("PlayerState"))
+local NPC = require(WSR:WaitForChild("NPC"))
+
+local M = {}
+M.onChange = nil -- set by Main: function(free, safe, total)
+M.onCalled = nil -- set by Main: function(player, kid)
+
+local kids = {}
+
+local function counts()
+	local free, safe = 0, 0
+	for _, k in ipairs(kids) do
+		if k.state == "Follow" then
+			free += 1
+		elseif k.state == "Safe" then
+			free += 1
+			safe += 1
+		end
+	end
+	return free, safe, #kids
+end
+
+local function changed()
+	local free, safe, total = counts()
+	workspace:SetAttribute("KidsFree", free)
+	workspace:SetAttribute("KidsSafe", safe)
+	if M.onChange then
+		M.onChange(free, safe, total)
+	end
+end
+
+local function insideBox(boxPart, pos)
+	local p = boxPart.CFrame:PointToObjectSpace(pos)
+	local h = boxPart.Size / 2
+	return math.abs(p.X) <= h.X and math.abs(p.Y) <= h.Y + 4 and math.abs(p.Z) <= h.Z
+end
+
+function M.start(world, roundId)
+	kids = {}
+	local folder = Instance.new("Folder")
+	folder.Name = "Lost"
+	folder.Parent = world.folder
+
+	for i, info in ipairs(Config.Kids) do
+		local home = world.cells[i]
+		local model, hum, hrp = NPC.make({
+			name = info.name,
+			parent = folder,
+			pos = home,
+			skin = Color3.fromRGB(120, 78, 44),
+			shirt = Color3.fromRGB(150, 150, 160),
+			pants = Color3.fromRGB(60, 70, 100),
+			speed = 15,
+			tag = true,
+		})
+		local kid = { info = info, model = model, hum = hum, hrp = hrp, home = home, state = "Locked", leader = nil }
+		local prompt = Instance.new("ProximityPrompt")
+		prompt.ActionText = "Call by name"
+		prompt.ObjectText = info.name .. ", " .. info.age
+		prompt.HoldDuration = Config.Hold.call
+		prompt.MaxActivationDistance = 9
+		prompt.RequiresLineOfSight = false
+		prompt.Parent = hrp
+		kid.prompt = prompt
+		prompt.Triggered:Connect(function(player)
+			if kid.state ~= "Locked" or not PlayerState.isActive(player) then
+				return
+			end
+			kid.state = "Follow"
+			kid.leader = player
+			prompt.Enabled = false
+			PlayerState.addWeight(player, -1) -- reaching someone lightens what you carry
+			if M.onCalled then
+				M.onCalled(player, kid)
+			end
+			changed()
+		end)
+		table.insert(kids, kid)
+
+		task.spawn(function()
+			while Round.id == roundId and model.Parent do
+				if kid.state == "Follow" then
+					local leaderRoot = kid.leader and PlayerState.getRoot(kid.leader)
+					if not leaderRoot then
+						M.release(kid)
+					else
+						local d = NPC.flatDist(hrp.Position, leaderRoot.Position)
+						if insideBox(world.exit, hrp.Position) then
+							kid.state = "Safe"
+							kid.leader = nil
+							hum:MoveTo(world.exit.Position + Vector3.new((i - 2) * 6, 0, 8))
+							changed()
+						elseif d > 80 then
+							model:PivotTo(leaderRoot.CFrame * CFrame.new(3, 0, 3))
+						elseif d > 7 then
+							NPC.goTo(hum, hrp, leaderRoot.Position, function()
+								return kid.state == "Follow" and Round.id == roundId
+							end, 2)
+						end
+					end
+				end
+				task.wait(0.4)
+			end
+		end)
+	end
+	changed()
+end
+
+-- Back to the cell (the leader was caught or left).
+function M.release(kid)
+	if kid.state ~= "Follow" then
+		return
+	end
+	kid.state = "Locked"
+	kid.leader = nil
+	kid.prompt.Enabled = true
+	kid.hum:MoveTo(kid.home)
+	changed()
+end
+
+function M.releaseFollowersOf(player)
+	for _, kid in ipairs(kids) do
+		if kid.leader == player then
+			M.release(kid)
+		end
+	end
+end
+
+return M
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX7"><Properties><string name="Name">NPC</string><ProtectedString name="Source"><![CDATA[-- Builds people (guards, kids, echoes) and walks them around with pathfinding.
+local Players = game:GetService("Players")
+local PathfindingService = game:GetService("PathfindingService")
+
+local M = {}
+
+local function flatDist(a, b)
+	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+end
+M.flatDist = flatDist
+
+-- A plain block person, used only if the engine cannot build an avatar (for example with no internet in Studio).
+local function fallbackModel(opts)
+	local model = Instance.new("Model")
+	local hrp = Instance.new("Part")
+	hrp.Name = "HumanoidRootPart"
+	hrp.Size = Vector3.new(2, 2, 1)
+	hrp.Transparency = 1
+	hrp.Parent = model
+	local function block(name, size, offset, color)
+		local p = Instance.new("Part")
+		p.Name = name
+		p.Size = size
+		p.Color = color
+		p.CanCollide = false
+		p.Massless = true
+		p.CFrame = hrp.CFrame * CFrame.new(offset)
+		local w = Instance.new("WeldConstraint")
+		w.Part0 = hrp
+		w.Part1 = p
+		w.Parent = p
+		p.Parent = model
+		return p
+	end
+	block("Torso", Vector3.new(2, 2, 1), Vector3.new(0, 0, 0), opts.shirt)
+	block("Head", Vector3.new(1.4, 1.4, 1.4), Vector3.new(0, 1.7, 0), opts.skin)
+	block("Legs", Vector3.new(2, 2, 1), Vector3.new(0, -2, 0), opts.pants)
+	local hum = Instance.new("Humanoid")
+	hum.HipHeight = 3
+	hum.Parent = model
+	model.PrimaryPart = hrp
+	return model
+end
+
+-- opts: name, parent, pos, skin, shirt, pants (Color3), speed, tag (show the name above the head)
+function M.make(opts)
+	local model
+	local ok = pcall(function()
+		local desc = Instance.new("HumanoidDescription")
+		desc.HeadColor = opts.skin
+		desc.TorsoColor = opts.shirt
+		desc.LeftArmColor = opts.shirt
+		desc.RightArmColor = opts.shirt
+		desc.LeftLegColor = opts.pants
+		desc.RightLegColor = opts.pants
+		model = Players:CreateHumanoidModelFromDescription(desc, Enum.HumanoidRigType.R15)
+	end)
+	if not ok or not model then
+		model = fallbackModel(opts)
+	end
+	model.Name = opts.name
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	hum.WalkSpeed = opts.speed or 12
+	hum.DisplayName = opts.name
+	hum.DisplayDistanceType = opts.tag and Enum.HumanoidDisplayDistanceType.Viewer or Enum.HumanoidDisplayDistanceType.None
+	hum.NameDisplayDistance = 25
+	hum.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+	model:PivotTo(CFrame.new(opts.pos))
+	model.Parent = opts.parent
+	local hrp = model:FindFirstChild("HumanoidRootPart")
+	if hrp then
+		pcall(function()
+			hrp:SetNetworkOwner(nil)
+		end)
+	end
+	return model, hum, hrp
+end
+
+-- Walks to `target` along a path. `valid()` is checked often; return false from it to abandon the walk.
+function M.goTo(hum, hrp, target, valid, maxSeconds)
+	local deadline = os.clock() + (maxSeconds or 20)
+	local path = PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true })
+	local ok = pcall(function()
+		path:ComputeAsync(hrp.Position, target)
+	end)
+	if not ok or path.Status ~= Enum.PathStatus.Success then
+		hum:MoveTo(target)
+		local t0 = os.clock()
+		while valid() and os.clock() < deadline and os.clock() - t0 < 1.5 and flatDist(hrp.Position, target) > 3 do
+			task.wait(0.1)
+		end
+		return
+	end
+	for i, wp in ipairs(path:GetWaypoints()) do
+		if i > 1 then
+			if not valid() or os.clock() > deadline then
+				return
+			end
+			if wp.Action == Enum.PathWaypointAction.Jump then
+				hum.Jump = true
+			end
+			hum:MoveTo(wp.Position)
+			local t0 = os.clock()
+			while valid() and os.clock() - t0 < 1.5 and flatDist(hrp.Position, wp.Position) > 3 do
+				task.wait(0.08)
+			end
+		end
+	end
+end
+
+return M
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX8"><Properties><string name="Name">PlayerState</string><ProtectedString name="Source"><![CDATA[-- Per-player state that must be decided on the server: stance, speed, Weight, flash cooldown and detention.
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Config = require(ReplicatedStorage:WaitForChild("WSRConfig"))
+
+local M = {}
+local states = {}
+local weightListeners = {}
+
+function M.get(player)
+	local s = states[player]
+	if not s then
+		s = { weight = 0, stance = "walk", flashReadyAt = 0, detainedUntil = 0, slowUntil = 0 }
+		states[player] = s
+		player:SetAttribute("Weight", 0)
+		player:SetAttribute("Stance", "walk")
+	end
+	return s
+end
+
+function M.remove(player)
+	states[player] = nil
+end
+
+function M.getHumanoid(player)
+	local char = player.Character
+	return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+function M.getRoot(player)
+	local char = player.Character
+	return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+-- True while the player is alive, in the game, and not being held by the gang.
+function M.isActive(player)
+	local hum = M.getHumanoid(player)
+	if not hum or hum.Health <= 0 or not M.getRoot(player) then
+		return false
+	end
+	return M.get(player).detainedUntil <= os.clock()
+end
+
+function M.applySpeed(player)
+	local hum = M.getHumanoid(player)
+	if not hum then
+		return
+	end
+	local s = M.get(player)
+	local now = os.clock()
+	if s.detainedUntil > now then
+		hum.WalkSpeed = 0
+		return
+	end
+	local mult = math.max(Config.Weight.minMultiplier, 1 - Config.Weight.slowPerPoint * s.weight)
+	if s.slowUntil > now then
+		mult = mult * Config.Weight.echoSlowMultiplier
+	end
+	hum.WalkSpeed = Config.Speed[s.stance] * mult
+end
+
+function M.setStance(player, stance)
+	if Config.Speed[stance] == nil then
+		return
+	end
+	local s = M.get(player)
+	s.stance = stance
+	player:SetAttribute("Stance", stance)
+	M.applySpeed(player)
+end
+
+function M.onWeight(fn)
+	table.insert(weightListeners, fn)
+end
+
+function M.clearListeners()
+	weightListeners = {}
+end
+
+function M.addWeight(player, delta)
+	local s = M.get(player)
+	s.weight = math.max(0, s.weight + delta)
+	player:SetAttribute("Weight", s.weight)
+	M.applySpeed(player)
+	for _, fn in ipairs(weightListeners) do
+		task.spawn(fn, player, s.weight)
+	end
+end
+
+function M.slow(player, seconds)
+	local s = M.get(player)
+	s.slowUntil = os.clock() + seconds
+	M.applySpeed(player)
+	task.delay(seconds + 0.05, function()
+		if player.Parent then
+			M.applySpeed(player)
+		end
+	end)
+end
+
+-- Start of a new round: everyone begins with no Weight.
+function M.reset()
+	for player, s in pairs(states) do
+		s.weight = 0
+		s.stance = "walk"
+		s.flashReadyAt = 0
+		s.detainedUntil = 0
+		s.slowUntil = 0
+		player:SetAttribute("Weight", 0)
+		player:SetAttribute("Stance", "walk")
+	end
+end
+
+return M
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX9"><Properties><string name="Name">Round</string><ProtectedString name="Source"><![CDATA[-- A counter that identifies the current round. Every background loop remembers the id it started with and stops when it changes.
+local Round = { id = 0 }
+return Round
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX10"><Properties><string name="Name">World</string><ProtectedString name="Source"><![CDATA[-- Builds the compound in code: yard, walls, two buildings, the cellblock, generators, lamps, cover and the road out.
+-- Layout (top view, -Z is north): the road and spawn are south (+Z), the cellblock is in the far north.
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Config = require(ReplicatedStorage:WaitForChild("WSRConfig"))
+
+local M = {}
+
+local CONCRETE = Color3.fromRGB(58, 60, 66)
+local WALL = Color3.fromRGB(46, 48, 54)
+local METAL = Color3.fromRGB(70, 74, 82)
+
+local function part(parent, name, size, cf, color, material)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Anchored = true
+	p.Size = size
+	p.CFrame = cf
+	p.Color = color or CONCRETE
+	p.Material = material or Enum.Material.Concrete
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Parent = parent
+	return p
+end
+
+-- A wall that runs along X at depth z, from x1 to x2, with an optional gap (a doorway) centred at gapCenter.
+local function wallX(parent, z, x1, x2, h, gapCenter, gapW, color)
+	local function seg(a, b)
+		if b - a > 0.1 then
+			part(parent, "Wall", Vector3.new(b - a, h, 1.5), CFrame.new((a + b) / 2, h / 2, z), color or WALL)
+		end
+	end
+	if gapCenter then
+		seg(x1, gapCenter - gapW / 2)
+		seg(gapCenter + gapW / 2, x2)
+	else
+		seg(x1, x2)
+	end
+end
+
+-- A wall that runs along Z at x, from z1 to z2, with an optional gap.
+local function wallZ(parent, x, z1, z2, h, gapCenter, gapW, color)
+	local function seg(a, b)
+		if b - a > 0.1 then
+			part(parent, "Wall", Vector3.new(1.5, h, b - a), CFrame.new(x, h / 2, (a + b) / 2), color or WALL)
+		end
+	end
+	if gapCenter then
+		seg(z1, gapCenter - gapW / 2)
+		seg(gapCenter + gapW / 2, z2)
+	else
+		seg(z1, z2)
+	end
+end
+
+-- A walled building with a roof and one doorway on the side named by doorSide ("N", "S", "E", "W").
+local function room(parent, cx, cz, w, d, h, doorSide, doorW)
+	local x1, x2, z1, z2 = cx - w / 2, cx + w / 2, cz - d / 2, cz + d / 2
+	wallX(parent, z1, x1, x2, h, doorSide == "N" and cx or nil, doorW)
+	wallX(parent, z2, x1, x2, h, doorSide == "S" and cx or nil, doorW)
+	wallZ(parent, x1, z1, z2, h, doorSide == "W" and cz or nil, doorW)
+	wallZ(parent, x2, z1, z2, h, doorSide == "E" and cz or nil, doorW)
+	part(parent, "Roof", Vector3.new(w + 1.5, 1, d + 1.5), CFrame.new(cx, h + 0.5, cz), Color3.fromRGB(38, 40, 46))
+end
+
+local function inRect(x, z, r, margin)
+	return x > r[1] - margin and x < r[2] + margin and z > r[3] - margin and z < r[4] + margin
+end
+
+function M.build()
+	local folder = Instance.new("Folder")
+	folder.Name = "WSR_World"
+	folder.Parent = workspace
+
+	-- Ground: the whole compound plus the road to the south.
+	part(folder, "Ground", Vector3.new(320, 2, 320), CFrame.new(0, -1, 20), Color3.fromRGB(34, 35, 38), Enum.Material.Asphalt)
+	part(folder, "RoadStripe", Vector3.new(3, 0.2, 60), CFrame.new(0, 0.1, 128), Color3.fromRGB(190, 170, 70), Enum.Material.SmoothPlastic)
+
+	-- Perimeter, with a gate gap on the south wall.
+	local H = 16
+	wallX(folder, -100, -100, 100, H)
+	wallX(folder, 100, -100, 100, H, 0, 26)
+	wallZ(folder, -100, -100, 100, H)
+	wallZ(folder, 100, -100, 100, H)
+
+	-- Buildings.
+	local warehouseRect = { -85, -35, -5, 45 }
+	local houseRect = { 35, 85, -30, 30 }
+	local cellRect = { -40, 40, -95, -60 }
+	room(folder, -60, 20, 50, 50, 12, "E", 8)
+	room(folder, 60, 0, 50, 60, 12, "W", 8)
+	room(folder, 0, -77.5, 80, 35, 12, "S", 8)
+
+	-- Cellblock: two partitions make three cells; the steel door stays shut until the power is cut.
+	wallZ(folder, -13, -95, -72, 12)
+	wallZ(folder, 13, -95, -72, 12)
+	local door = part(folder, "CellDoor", Vector3.new(8, 12, 1.5), CFrame.new(0, 6, -60), METAL, Enum.Material.DiamondPlate)
+	local cells = { Vector3.new(-26, 3, -86), Vector3.new(0, 3, -86), Vector3.new(26, 3, -86) }
+
+	-- Spawn on the road, outside the gate.
+	local spawn = Instance.new("SpawnLocation")
+	spawn.Name = "RoadSpawn"
+	spawn.Anchored = true
+	spawn.Size = Vector3.new(14, 1, 14)
+	spawn.CFrame = CFrame.new(0, 0.5, 135)
+	spawn.Neutral = true
+	spawn.Duration = 0
+	spawn.Transparency = 1
+	spawn.CanCollide = false
+	spawn.Parent = folder
+
+	-- The road out: kids who stand here are safe.
+	local exit = part(folder, "ExitZone", Vector3.new(40, 10, 34), CFrame.new(0, 5, 114), Color3.fromRGB(90, 200, 120), Enum.Material.SmoothPlastic)
+	exit.Transparency = 1
+	exit.CanCollide = false
+	exit.CanQuery = false
+	exit.CanTouch = false
+	local sign = part(folder, "RoadSign", Vector3.new(26, 4, 1), CFrame.new(0, 14, 100), Color3.fromRGB(20, 24, 22), Enum.Material.SmoothPlastic)
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Front
+	gui.Parent = sign
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.Text = "THE ROAD OUT"
+	label.TextScaled = true
+	label.Font = Enum.Font.GothamBold
+	label.TextColor3 = Color3.fromRGB(120, 230, 150)
+	label.Parent = gui
+	local sign2 = sign:Clone()
+	sign2.CFrame = sign.CFrame * CFrame.Angles(0, math.pi, 0)
+	sign2.Parent = folder
+
+	-- Generators: cutting all three kills the lights and opens the cellblock.
+	local genSpots = { Vector3.new(-75, 2.5, 75), Vector3.new(75, 2.5, 55), Vector3.new(-72, 2.5, 28) }
+	local gens = {}
+	for i, pos in ipairs(genSpots) do
+		local g = part(folder, "Generator" .. i, Vector3.new(6, 5, 6), CFrame.new(pos), Color3.fromRGB(200, 150, 40), Enum.Material.Metal)
+		local prompt = Instance.new("ProximityPrompt")
+		prompt.ActionText = "Cut the power"
+		prompt.ObjectText = "Generator " .. i
+		prompt.HoldDuration = Config.Hold.generator
+		prompt.MaxActivationDistance = 9
+		prompt.RequiresLineOfSight = false
+		prompt.Parent = g
+		local glow = Instance.new("PointLight")
+		glow.Color = Color3.fromRGB(255, 190, 80)
+		glow.Range = 14
+		glow.Brightness = 1.5
+		glow.Parent = g
+		gens[i] = { part = g, prompt = prompt, glow = glow, group = i, on = true }
+	end
+
+	-- Lamps. Each belongs to its nearest generator and goes dark when that one is cut.
+	local lampSpots = {
+		{ -70, 85 }, { 0, 85 }, { 70, 85 }, { -90, 55 }, { 20, 45 }, { -20, 15 }, { 90, 40 },
+		{ 20, -10 }, { 90, -45 }, { -90, -45 }, { -20, -45 }, { 20, -45 }, { -60, 20 }, { 60, 0 },
+	}
+	local lamps = {}
+	for _, s in ipairs(lampSpots) do
+		local x, z = s[1], s[2]
+		local pole = part(folder, "LampPole", Vector3.new(0.6, 14, 0.6), CFrame.new(x, 7, z), METAL, Enum.Material.Metal)
+		local bulb = part(folder, "LampBulb", Vector3.new(2, 2, 2), CFrame.new(x, 14.5, z), Color3.fromRGB(255, 214, 140), Enum.Material.Neon)
+		bulb.Shape = Enum.PartType.Ball
+		bulb.CanCollide = false
+		local light = Instance.new("PointLight")
+		light.Color = Color3.fromRGB(255, 200, 130)
+		light.Range = 38
+		light.Brightness = 1.6
+		light.Parent = bulb
+		local best, bestD = 1, math.huge
+		for i, pos in ipairs(genSpots) do
+			local d = (Vector3.new(x, 0, z) - Vector3.new(pos.X, 0, pos.Z)).Magnitude
+			if d < bestD then
+				best, bestD = i, d
+			end
+		end
+		table.insert(lamps, { light = light, bulb = bulb, group = best })
+		pole.CanCollide = false
+	end
+
+	-- Cover: crates scattered in the yard, away from the buildings and the road.
+	local rng = Random.new(42)
+	local placed = 0
+	local tries = 0
+	while placed < 36 and tries < 400 do
+		tries += 1
+		local x, z = rng:NextInteger(-92, 92), rng:NextInteger(-55, 92)
+		if
+			not inRect(x, z, warehouseRect, 6)
+			and not inRect(x, z, houseRect, 6)
+			and not inRect(x, z, cellRect, 6)
+			and not (math.abs(x) < 16 and z > 80)
+		then
+			local s = rng:NextInteger(4, 7)
+			part(folder, "Crate", Vector3.new(s, s, s), CFrame.new(x, s / 2, z) * CFrame.Angles(0, rng:NextNumber(0, math.pi), 0), Color3.fromRGB(86, 64, 40), Enum.Material.Wood)
+			placed += 1
+		end
+	end
+	-- A few crates inside the warehouse and the house, for hiding.
+	for _, c in ipairs({ { -50, 10 }, { -70, 38 }, { -45, 35 }, { 50, -15 }, { 70, 15 }, { 55, 20 } }) do
+		part(folder, "Crate", Vector3.new(5, 5, 5), CFrame.new(c[1], 2.5, c[2]), Color3.fromRGB(86, 64, 40), Enum.Material.Wood)
+	end
+
+	local routes = {
+		{ Vector3.new(-60, 3, 85), Vector3.new(60, 3, 85), Vector3.new(60, 3, 65), Vector3.new(-60, 3, 65) }, -- the yard by the gate
+		{ Vector3.new(-90, 3, -55), Vector3.new(-50, 3, -55), Vector3.new(-50, 3, -30), Vector3.new(-90, 3, -30) }, -- west side
+		{ Vector3.new(90, 3, -55), Vector3.new(50, 3, -55), Vector3.new(50, 3, -40), Vector3.new(90, 3, -40) }, -- east side
+		{ Vector3.new(-20, 3, 50), Vector3.new(20, 3, 50), Vector3.new(20, 3, 10), Vector3.new(-20, 3, 10) }, -- the middle
+		{ Vector3.new(-75, 3, 0), Vector3.new(-45, 3, 0), Vector3.new(-45, 3, 40), Vector3.new(-75, 3, 40) }, -- inside the warehouse
+		{ Vector3.new(-30, 3, -48), Vector3.new(30, 3, -48), Vector3.new(30, 3, -30), Vector3.new(-30, 3, -30) }, -- in front of the cellblock
+	}
+
+	local echoSpawns = {
+		Vector3.new(-90, 3, -40), Vector3.new(90, 3, -50), Vector3.new(0, 3, 10), Vector3.new(-20, 3, 50), Vector3.new(25, 3, -40),
+	}
+
+	return {
+		folder = folder,
+		spawn = spawn,
+		exit = exit,
+		door = door,
+		cells = cells,
+		gens = gens,
+		lamps = lamps,
+		routes = routes,
+		echoSpawns = echoSpawns,
+	}
+end
+
+return M
+]]></ProtectedString></Properties></Item></Item></Item><Item class="ServerScriptService" referent="RBX14"><Properties><string name="Name">ServerScriptService</string></Properties><Item class="Script" referent="RBX13"><Properties><string name="Name">Main</string><ProtectedString name="Source"><![CDATA[-- Wout San Retou: The Road of No Return (Roblox edition). Server entry point: builds the round and runs the rules.
+--
+-- The story, kept non-violent for Roblox: it is night in a gang's compound. Cut the power, get into the cellblock, call the
+-- Lost kids by name and lead them out by the road. Guards catch you and send you back; the flash can blind them, but
+-- using force adds Weight, and Weight calls Echoes that slow you down. Reaching the kids by name lightens it.
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local Lighting = game:GetService("Lighting")
+local TweenService = game:GetService("TweenService")
+
+local Config = require(ReplicatedStorage:WaitForChild("WSRConfig"))
+local WSR = ServerStorage:WaitForChild("WSR")
+local Round = require(WSR:WaitForChild("Round"))
+local PlayerState = require(WSR:WaitForChild("PlayerState"))
+local World = require(WSR:WaitForChild("World"))
+local Guards = require(WSR:WaitForChild("Guards"))
+local Kids = require(WSR:WaitForChild("Kids"))
+local Echoes = require(WSR:WaitForChild("Echoes"))
+
+-- Remote events the client listens to (server to client) or fires (client to server).
+local remotes = ReplicatedStorage:FindFirstChild("WSRRemotes")
+if not remotes then
+	remotes = Instance.new("Folder")
+	remotes.Name = "WSRRemotes"
+	remotes.Parent = ReplicatedStorage
+	for _, name in ipairs({ "Stance", "Flash", "Notify", "Detained", "Ending" }) do
+		local r = Instance.new("RemoteEvent")
+		r.Name = name
+		r.Parent = remotes
+	end
+end
+
+local function notifyAll(text)
+	remotes.Notify:FireAllClients(text)
+end
+
+local function setupLighting()
+	Lighting.ClockTime = 0
+	Lighting.Brightness = 0.4
+	Lighting.Ambient = Color3.fromRGB(28, 30, 46)
+	Lighting.OutdoorAmbient = Color3.fromRGB(38, 40, 62)
+	Lighting.FogColor = Color3.fromRGB(14, 16, 26)
+	Lighting.FogStart = 60
+	Lighting.FogEnd = 260
+	Lighting.GlobalShadows = true
+	if not Lighting:FindFirstChild("WSR_Atmosphere") then
+		local a = Instance.new("Atmosphere")
+		a.Name = "WSR_Atmosphere"
+		a.Density = 0.3
+		a.Color = Color3.fromRGB(40, 46, 70)
+		a.Parent = Lighting
+		local cc = Instance.new("ColorCorrectionEffect")
+		cc.Name = "WSR_Color"
+		cc.Saturation = -0.25
+		cc.Contrast = 0.1
+		cc.Parent = Lighting
+		local bloom = Instance.new("BloomEffect")
+		bloom.Name = "WSR_Bloom"
+		bloom.Intensity = 0.5
+		bloom.Parent = Lighting
+	end
+end
+
+local currentWorld = nil
+
+local function endRound()
+	if workspace:GetAttribute("RoundOver") then
+		return
+	end
+	workspace:SetAttribute("RoundOver", true)
+	local total, n = 0, 0
+	for _, p in ipairs(Players:GetPlayers()) do
+		total += PlayerState.get(p).weight
+		n += 1
+	end
+	local avg = n > 0 and total / n or 0
+	local text
+	if avg <= 1 then
+		text = "You carried them out and left nothing heavy behind."
+	elseif avg <= 4 then
+		text = "You got them out. Some of the weight came with you."
+	else
+		text = "They are free. What it cost to get here is still with you."
+	end
+	remotes.Ending:FireAllClients(text, workspace:GetAttribute("KidsSafe") or 0)
+	task.delay(15, function()
+		-- startRound is defined below; this closure only runs after the file has loaded.
+		Round.restart()
+	end)
+end
+
+local function connectGenerator(world, gen)
+	gen.prompt.Triggered:Connect(function()
+		if not gen.on then
+			return
+		end
+		gen.on = false
+		gen.prompt.Enabled = false
+		gen.glow.Enabled = false
+		gen.part.Color = Color3.fromRGB(70, 60, 40)
+		for _, lamp in ipairs(world.lamps) do
+			if lamp.group == gen.group then
+				lamp.light.Enabled = false
+				lamp.bulb.Material = Enum.Material.SmoothPlastic
+				lamp.bulb.Color = Color3.fromRGB(40, 40, 44)
+			end
+		end
+		local off = (workspace:GetAttribute("GensOff") or 0) + 1
+		workspace:SetAttribute("GensOff", off)
+		if off >= #world.gens then
+			notifyAll("All the power is cut. The cellblock door is open.")
+			local tween = TweenService:Create(world.door, TweenInfo.new(2), { CFrame = world.door.CFrame + Vector3.new(0, 13, 0) })
+			tween:Play()
+			tween.Completed:Connect(function()
+				world.door.CanCollide = false
+			end)
+		else
+			notifyAll("Generator " .. gen.group .. " is off. " .. off .. " of " .. #world.gens .. ".")
+		end
+	end)
+end
+
+local function startRound()
+	Round.id += 1
+	local id = Round.id
+	PlayerState.clearListeners()
+	PlayerState.reset()
+	local old = workspace:FindFirstChild("WSR_World")
+	if old then
+		old:Destroy()
+	end
+
+	local world = World.build()
+	currentWorld = world
+	workspace:SetAttribute("GensOff", 0)
+	workspace:SetAttribute("GensTotal", #world.gens)
+	workspace:SetAttribute("KidsFree", 0)
+	workspace:SetAttribute("KidsSafe", 0)
+	workspace:SetAttribute("KidsTotal", #Config.Kids)
+	workspace:SetAttribute("Alert", 0)
+	workspace:SetAttribute("RoundOver", false)
+
+	for _, gen in ipairs(world.gens) do
+		connectGenerator(world, gen)
+	end
+
+	Kids.onCalled = function(player, kid)
+		remotes.Notify:FireClient(player, kid.info.line)
+	end
+	Kids.onChange = function(free, safe, total)
+		if safe >= total and total > 0 then
+			endRound()
+		end
+	end
+	Guards.onCaught = function(player)
+		local st = PlayerState.get(player)
+		if os.clock() < st.detainedUntil or workspace:GetAttribute("RoundOver") then
+			return
+		end
+		st.detainedUntil = os.clock() + 3
+		PlayerState.applySpeed(player)
+		remotes.Detained:FireClient(player, "Caught. They drag you back to the road.")
+		Kids.releaseFollowersOf(player)
+		Guards.calmAll()
+		task.delay(1.2, function()
+			if currentWorld == world and player.Character then
+				player.Character:PivotTo(world.spawn.CFrame + Vector3.new(0, 5, 0))
+			end
+		end)
+		task.delay(3, function()
+			st.detainedUntil = 0
+			PlayerState.applySpeed(player)
+		end)
+	end
+
+	Guards.start(world, id)
+	Kids.start(world, id)
+	Echoes.start(world, id)
+
+	for _, p in ipairs(Players:GetPlayers()) do
+		p:LoadCharacter()
+	end
+	notifyAll("Cut the power. Reach the cellblock. Call them by name. Lead them to the road.")
+end
+Round.restart = startRound
+
+-- Player setup.
+local function onPlayer(player)
+	PlayerState.get(player)
+	player.CharacterAdded:Connect(function(char)
+		local s = PlayerState.get(player)
+		s.stance = "walk"
+		s.detainedUntil = 0
+		player:SetAttribute("Stance", "walk")
+		char:WaitForChild("Humanoid")
+		PlayerState.applySpeed(player)
+	end)
+end
+
+Players.PlayerAdded:Connect(onPlayer)
+Players.PlayerRemoving:Connect(PlayerState.remove)
+for _, p in ipairs(Players:GetPlayers()) do
+	onPlayer(p)
+end
+
+remotes.Stance.OnServerEvent:Connect(function(player, stance)
+	if type(stance) == "string" then
+		PlayerState.setStance(player, stance)
+	end
+end)
+
+remotes.Flash.OnServerEvent:Connect(function(player)
+	if not PlayerState.isActive(player) or workspace:GetAttribute("RoundOver") then
+		return
+	end
+	local s = PlayerState.get(player)
+	local now = os.clock()
+	if now < s.flashReadyAt then
+		return
+	end
+	local hit = Guards.flash(player)
+	if hit > 0 then
+		s.flashReadyAt = now + Config.Flash.cooldown
+		PlayerState.addWeight(player, Config.Flash.weightCost)
+		remotes.Notify:FireClient(player, "You blinded someone. It stays with you.")
+	else
+		s.flashReadyAt = now + Config.Flash.missCooldown
+		remotes.Notify:FireClient(player, "Nobody in front of you.")
+	end
+	remotes.Flash:FireClient(player, hit, s.flashReadyAt - now)
+end)
+
+setupLighting()
+Players.RespawnTime = 3
+startRound()
+]]></ProtectedString></Properties></Item></Item><Item class="StarterPlayer" referent="RBX18"><Properties><string name="Name">StarterPlayer</string></Properties><Item class="StarterPlayerScripts" referent="RBX16"><Properties><string name="Name">StarterPlayerScripts</string></Properties><Item class="LocalScript" referent="RBX15"><Properties><string name="Name">Client</string><ProtectedString name="Source"><![CDATA[-- Wout San Retou (Roblox edition): the player's screen. Draws the HUD and sends stance and flash requests to the server.
+-- The server decides speed, Weight and everything that matters; this script only asks.
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+local Config = require(ReplicatedStorage:WaitForChild("WSRConfig"))
+local remotes = ReplicatedStorage:WaitForChild("WSRRemotes")
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local INK = Color3.fromRGB(235, 232, 225)
+local DIM = Color3.fromRGB(170, 168, 160)
+local GOLD = Color3.fromRGB(230, 170, 60)
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "WSR_HUD"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = playerGui
+
+local function label(parent, text, size, pos, textSize, color, align)
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Size = size
+	l.Position = pos
+	l.Text = text
+	l.TextSize = textSize
+	l.TextColor3 = color or INK
+	l.Font = Enum.Font.GothamMedium
+	l.TextXAlignment = align or Enum.TextXAlignment.Left
+	l.TextWrapped = true
+	l.Parent = parent
+	return l
+end
+
+-- Top left: the objective.
+local panel = Instance.new("Frame")
+panel.BackgroundColor3 = Color3.fromRGB(10, 10, 14)
+panel.BackgroundTransparency = 0.35
+panel.Size = UDim2.fromOffset(330, 112)
+panel.Position = UDim2.fromOffset(16, 16)
+panel.BorderSizePixel = 0
+panel.Parent = gui
+Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 8)
+label(panel, "WOUT SAN RETOU", UDim2.new(1, -20, 0, 22), UDim2.fromOffset(12, 8), 14, GOLD)
+local objective = label(panel, "", UDim2.new(1, -20, 0, 44), UDim2.fromOffset(12, 32), 17)
+local counts = label(panel, "", UDim2.new(1, -20, 0, 24), UDim2.fromOffset(12, 80), 14, DIM)
+
+-- Top centre: how alert the guards are.
+local alertBack = Instance.new("Frame")
+alertBack.BackgroundColor3 = Color3.fromRGB(10, 10, 14)
+alertBack.BackgroundTransparency = 0.35
+alertBack.AnchorPoint = Vector2.new(0.5, 0)
+alertBack.Position = UDim2.new(0.5, 0, 0, 20)
+alertBack.Size = UDim2.fromOffset(260, 14)
+alertBack.BorderSizePixel = 0
+alertBack.Parent = gui
+Instance.new("UICorner", alertBack).CornerRadius = UDim.new(1, 0)
+local alertFill = Instance.new("Frame")
+alertFill.BorderSizePixel = 0
+alertFill.Size = UDim2.fromScale(0, 1)
+alertFill.BackgroundColor3 = Color3.fromRGB(240, 200, 70)
+alertFill.Parent = alertBack
+Instance.new("UICorner", alertFill).CornerRadius = UDim.new(1, 0)
+label(gui, "GUARDS", UDim2.fromOffset(260, 16), UDim2.new(0.5, -130, 0, 38), 11, DIM, Enum.TextXAlignment.Center)
+
+-- Bottom left: stance and Weight.
+local status = Instance.new("Frame")
+status.BackgroundColor3 = Color3.fromRGB(10, 10, 14)
+status.BackgroundTransparency = 0.35
+status.AnchorPoint = Vector2.new(0, 1)
+status.Position = UDim2.new(0, 16, 1, -16)
+status.Size = UDim2.fromOffset(230, 74)
+status.BorderSizePixel = 0
+status.Parent = gui
+Instance.new("UICorner", status).CornerRadius = UDim.new(0, 8)
+local stanceLabel = label(status, "", UDim2.new(1, -20, 0, 24), UDim2.fromOffset(12, 8), 16)
+local weightLabel = label(status, "", UDim2.new(1, -20, 0, 24), UDim2.fromOffset(12, 32), 16, GOLD)
+local flashLabel = label(status, "", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(12, 54), 13, DIM)
+
+-- Bottom centre: key hints.
+local hints = label(gui, "Shift run   C sneak   F flash   E hold to use", UDim2.fromOffset(420, 20), UDim2.new(0.5, -210, 1, -34), 13, DIM, Enum.TextXAlignment.Center)
+hints.Visible = not UserInputService.TouchEnabled
+
+-- Centre: messages.
+local message = label(gui, "", UDim2.fromOffset(560, 60), UDim2.new(0.5, -280, 0.72, 0), 22, INK, Enum.TextXAlignment.Center)
+message.TextTransparency = 1
+message.TextStrokeTransparency = 1
+local messageToken = 0
+local function show(text)
+	messageToken += 1
+	local mine = messageToken
+	message.Text = text
+	message.TextTransparency = 0
+	message.TextStrokeTransparency = 0.6
+	task.delay(4.5, function()
+		if messageToken == mine then
+			TweenService:Create(message, TweenInfo.new(1), { TextTransparency = 1, TextStrokeTransparency = 1 }):Play()
+		end
+	end)
+end
+
+-- Full-screen fade and the ending card.
+local fade = Instance.new("Frame")
+fade.BackgroundColor3 = Color3.new(0, 0, 0)
+fade.BackgroundTransparency = 1
+fade.Size = UDim2.fromScale(1, 1)
+fade.ZIndex = 10
+fade.Parent = gui
+local fadeText = label(fade, "", UDim2.fromOffset(600, 120), UDim2.new(0.5, -300, 0.4, 0), 28, INK, Enum.TextXAlignment.Center)
+fadeText.ZIndex = 11
+
+-- Touch buttons (phones and tablets).
+local function touchButton(text, y, onDown, onUp)
+	local b = Instance.new("TextButton")
+	b.Text = text
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 16
+	b.TextColor3 = INK
+	b.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+	b.BackgroundTransparency = 0.25
+	b.Size = UDim2.fromOffset(84, 56)
+	b.AnchorPoint = Vector2.new(1, 1)
+	b.Position = UDim2.new(1, -16, 1, y)
+	b.Parent = gui
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 10)
+	b.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+			onDown()
+		end
+	end)
+	b.InputEnded:Connect(function(input)
+		if onUp and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1) then
+			onUp()
+		end
+	end)
+	return b
+end
+
+-- Input: the stance is the sum of "sneak is toggled" and "shift is held".
+local sneakToggled = false
+local shiftHeld = false
+local lastSent = nil
+local function sendStance()
+	local stance = sneakToggled and "sneak" or (shiftHeld and "sprint" or "walk")
+	if stance ~= lastSent then
+		lastSent = stance
+		remotes.Stance:FireServer(stance)
+	end
+end
+
+local function flash()
+	remotes.Flash:FireServer()
+end
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then
+		return
+	end
+	if input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift then
+		shiftHeld = true
+		sendStance()
+	elseif input.KeyCode == Enum.KeyCode.C then
+		sneakToggled = not sneakToggled
+		sendStance()
+	elseif input.KeyCode == Enum.KeyCode.F then
+		flash()
+	end
+end)
+UserInputService.InputEnded:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift then
+		shiftHeld = false
+		sendStance()
+	end
+end)
+
+if UserInputService.TouchEnabled then
+	touchButton("RUN", -16, function()
+		shiftHeld = true
+		sendStance()
+	end, function()
+		shiftHeld = false
+		sendStance()
+	end)
+	touchButton("SNEAK", -84, function()
+		sneakToggled = not sneakToggled
+		sendStance()
+	end)
+	touchButton("FLASH", -152, flash)
+end
+
+-- A new character starts upright and walking.
+player.CharacterAdded:Connect(function()
+	sneakToggled = false
+	shiftHeld = false
+	lastSent = nil
+	sendStance()
+end)
+
+-- Updating the HUD from what the server publishes.
+local function refresh()
+	local gensOff = workspace:GetAttribute("GensOff") or 0
+	local gensTotal = workspace:GetAttribute("GensTotal") or 3
+	local free = workspace:GetAttribute("KidsFree") or 0
+	local safe = workspace:GetAttribute("KidsSafe") or 0
+	local total = workspace:GetAttribute("KidsTotal") or #Config.Kids
+	if gensOff < gensTotal then
+		objective.Text = "Cut the power at every generator."
+	elseif free < total then
+		objective.Text = "Reach the cellblock and call the Lost by name."
+	else
+		objective.Text = "Lead them to the road out."
+	end
+	counts.Text = ("Power cut %d/%d   Reached %d/%d   Safe %d/%d"):format(gensOff, gensTotal, free, total, safe, total)
+	local w = player:GetAttribute("Weight") or 0
+	weightLabel.Text = "Weight: " .. w
+	local stance = player:GetAttribute("Stance") or "walk"
+	stanceLabel.Text = "Stance: " .. stance
+	local alert = workspace:GetAttribute("Alert") or 0
+	alertFill.Size = UDim2.fromScale(alert, 1)
+	alertFill.BackgroundColor3 = alert >= 1 and Color3.fromRGB(220, 70, 60) or Color3.fromRGB(240, 200, 70)
+end
+workspace.AttributeChanged:Connect(refresh)
+player.AttributeChanged:Connect(refresh)
+refresh()
+
+-- Flash cooldown shown next to the stance.
+local readyAt = 0
+task.spawn(function()
+	while true do
+		local left = readyAt - os.clock()
+		flashLabel.Text = left > 0 and ("Flash ready in %.0fs"):format(left) or "Flash ready"
+		task.wait(0.25)
+	end
+end)
+
+remotes.Notify.OnClientEvent:Connect(show)
+remotes.Flash.OnClientEvent:Connect(function(hit, cooldown)
+	readyAt = os.clock() + (cooldown or 0)
+	if hit and hit > 0 then
+		fade.BackgroundColor3 = Color3.new(1, 1, 1)
+		fade.BackgroundTransparency = 0.2
+		TweenService:Create(fade, TweenInfo.new(0.5), { BackgroundTransparency = 1 }):Play()
+	end
+end)
+remotes.Detained.OnClientEvent:Connect(function(text)
+	fade.BackgroundColor3 = Color3.new(0, 0, 0)
+	fadeText.Text = text
+	TweenService:Create(fade, TweenInfo.new(0.8), { BackgroundTransparency = 0 }):Play()
+	task.delay(2.4, function()
+		fadeText.Text = ""
+		TweenService:Create(fade, TweenInfo.new(0.8), { BackgroundTransparency = 1 }):Play()
+	end)
+end)
+remotes.Ending.OnClientEvent:Connect(function(text, safe)
+	fade.BackgroundColor3 = Color3.new(0, 0, 0)
+	fadeText.Text = ("%d of %d reached the road.\n\n%s"):format(safe, #Config.Kids, text)
+	TweenService:Create(fade, TweenInfo.new(2), { BackgroundTransparency = 0.15 }):Play()
+	task.delay(13, function()
+		fadeText.Text = ""
+		TweenService:Create(fade, TweenInfo.new(1), { BackgroundTransparency = 1 }):Play()
+	end)
+end)
+
+-- First screen: what to do.
+show("Cut the power. Reach the cellblock. Call them by name. Lead them to the road.")
+]]></ProtectedString></Properties></Item></Item><Item class="StarterCharacterScripts" referent="RBX17"><Properties><string name="Name">StarterCharacterScripts</string></Properties></Item></Item></roblox>
