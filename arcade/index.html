@@ -40,10 +40,14 @@
       <button id="snd" type="button">Sound: on</button>
     </div>
     <p class="note">Desktop keyboard and mouse. WASD move, Shift run, mouse aim, click to fire, 1 and 2 weapons, R reload, H drink, E to name a Lost one, M music, Esc pause.
-      Fictional story with gunfire and horror imagery, for teenagers and older. Every kill earns 0.1 LionCoin, a game score with no cash value, saved in this browser only.
-      Want the full 3D game? <a href="/wout-san-retou/">Download it for Mac and Windows</a>.</p>
+      Fictional story with gunfire and horror imagery, for teenagers and older. Every kill earns 0.1 LionCoin in your OK Music wallet when you are signed in (up to 10 a day), and you get 20 chances a day. 2 LionCoin buys 20 more. As a guest you can play but earn nothing. Want the full 3D game? <a href="/wout-san-retou/">Download it for Mac and Windows</a>.</p>
   </div>
-  <script src="game.js"></script>
+  <!-- Same Firebase project as OK Music: the arcade pays and charges the player's real LionCoin wallet when signed in. -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+  <script src="/firebase-init.js?v=13"></script>
+  <script src="game.js?v=2"></script>
   <script>
     (function () {
       var wrap = document.getElementById('wrap'), fs = document.getElementById('fs'), snd = document.getElementById('snd');

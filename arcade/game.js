@@ -16,17 +16,93 @@ const rint = (a, b) => Math.floor(rand(a, b + 1));
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
 const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
 
-/* ---------- saved progress (browser only; a game score, not real money) ---------- */
+/* ---------- progress, chances and the OK Music LionCoin wallet ----------
+   Guests keep their level and daily chances in this browser and earn nothing.
+   Signed-in players (the same OK Music login) earn and spend REAL LionCoin in wallets/{uid}, the same
+   document the rest of the site uses. Amounts below are in tenths of a LionCoin. */
 const DAILY = 20;           // chances per day
-const CONTINUE_COST = 20;   // 2.0 LionCoin, stored in tenths
-function today() { const d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
-const save = { coinsT: 0, chances: DAILY, day: today(), level: 1, best: 0 };
+const CONTINUE_COST = 20;   // 2.0 LionCoin
+const KILL_T = 1;           // 0.1 LionCoin per kill
+const DAY_CAP_T = 100;      // the arcade pays at most 10.0 LionCoin per day (protects the site's economy; raise it if you want)
+function today() { return new Date().toISOString().slice(0, 10); } // UTC day, same as the site's daily-login reward
+const save = { chances: DAILY, day: today(), level: 1, best: 0 };
 function loadSave() {
-  try { const s = JSON.parse(localStorage.getItem('wsr_arcade_v1') || 'null'); if (s) Object.assign(save, s); } catch (e) {}
-  rollDay();
+  try { const s = JSON.parse(localStorage.getItem('wsr_arcade_v1') || 'null'); if (s) { save.level = s.level || 1; save.best = s.best || 0; if (s.day === today()) { save.day = s.day; save.chances = s.chances; } } } catch (e) {}
 }
 function rollDay() { if (save.day !== today()) { save.day = today(); save.chances = DAILY; persist(); } }
 function persist() { try { localStorage.setItem('wsr_arcade_v1', JSON.stringify(save)); } catch (e) {} }
+
+const Acct = {
+  uid: null, db: null, auth: null, bal: 0, chances: DAILY, earnedT: 0, pendingT: 0, day: today(), err: '', unsub: null, ready: false, capMsg: false,
+  init() {
+    try {
+      if (typeof fbAuth === 'undefined' || typeof fbDB === 'undefined') return;
+      this.auth = fbAuth; this.db = fbDB; this.hook();
+    } catch (e) {}
+  },
+  hook() {
+    this.auth.onAuthStateChanged((user) => {
+      if (this.unsub) { this.unsub(); this.unsub = null; }
+      this.uid = user ? user.uid : null; this.ready = false; this.pendingT = 0;
+      if (!user) { this.bal = 0; return; }
+      this.unsub = this.db.collection('wallets').doc(this.uid).onSnapshot((s) => {
+        const d = s.exists ? s.data() : {}; const same = d.arcadeDay === today();
+        this.bal = parseFloat(d.balance) || 0; this.chances = same ? (d.arcadeChances == null ? DAILY : d.arcadeChances) : DAILY; this.earnedT = same ? (d.arcadeEarnedT || 0) : 0; this.day = today(); this.ready = true;
+      }, (e) => { this.err = String(e && e.message || e); });
+    });
+  },
+  get signedIn() { return !!this.uid; },
+  refreshDay() { if (this.day !== today()) { this.day = today(); this.chances = DAILY; this.earnedT = 0; this.capMsg = false; } rollDay(); },
+  payableT() { return Math.max(0, DAY_CAP_T - this.earnedT); },
+  coinsT() { return this.uid ? Math.round(this.bal * 10) + Math.min(this.pendingT, this.payableT()) : 0; },
+  chancesLeft() { this.refreshDay(); return this.uid ? this.chances : save.chances; },
+  earn(t) { // a kill, a Lost one woken
+    if (!this.uid || t <= 0) return;
+    if (this.payableT() - this.pendingT <= 0 && !this.capMsg) { this.capMsg = true; showMsg('Daily arcade LionCoin cap reached (' + (DAY_CAP_T / 10).toFixed(1) + '). Kills no longer pay today.', 4); }
+    this.pendingT += t; if (this.pendingT >= 10) this.flush();
+  },
+  penalize(t) { if (this.uid) this.pendingT = Math.max(0, this.pendingT - t); },
+  async tx(fn) { // one atomic read-modify-write of the player's own wallet document
+    const ref = this.db.collection('wallets').doc(this.uid), F = firebase.firestore.FieldValue; let out = null;
+    await this.db.runTransaction(async (t) => {
+      const s = await t.get(ref), d = s.exists ? s.data() : {}, same = d.arcadeDay === today();
+      const st = { bal: parseFloat(d.balance) || 0, chances: same ? (d.arcadeChances == null ? DAILY : d.arcadeChances) : DAILY, earnedT: same ? (d.arcadeEarnedT || 0) : 0 };
+      const r = fn(st); const upd = { arcadeDay: today(), arcadeChances: r.chances, arcadeEarnedT: r.earnedT };
+      if (r.dBal > 0) { upd.balance = F.increment(r.dBal); upd.totalEarned = F.increment(r.dBal); } else if (r.dBal < 0) { upd.balance = F.increment(r.dBal); upd.totalSpent = F.increment(-r.dBal); }
+      if (s.exists) t.update(ref, upd); else t.set(ref, Object.assign({}, upd, { balance: Math.max(0, r.dBal), totalEarned: Math.max(0, r.dBal), totalSpent: 0, isPublic: false, streak: 0, lastLoginDate: '', lastMilestone: 0, createdAt: Date.now() }));
+      out = r;
+    });
+    return out;
+  },
+  note(type, amount, description) { try { this.db.collection('wallets').doc(this.uid).collection('transactions').add({ type, amount, description, ref: '', createdAt: Date.now() }).catch(() => {}); } catch (e) {} },
+  async flush() { // one wallet write at a time; kills that arrive meanwhile wait for the next one
+    if (!this.uid || this.pendingT <= 0) return;
+    if (this.flushing) { this.again = true; return; }
+    this.flushing = true; const take = this.pendingT; this.pendingT = 0; let paid = 0;
+    try {
+      const r = await this.tx((st) => { paid = Math.max(0, Math.min(take, DAY_CAP_T - st.earnedT)); return { dBal: Math.round(paid) / 10, chances: st.chances, earnedT: st.earnedT + paid }; });
+      this.earnedT = r.earnedT; if (paid > 0) this.note('arcade_kills', paid / 10, 'Wout San Retou arcade');
+    } catch (e) { this.pendingT += take; this.err = String(e && e.message || e); }
+    this.flushing = false;
+    if (this.again || this.pendingT >= 10) { this.again = false; if (this.pendingT > 0 && !this.err) this.flush(); }
+  },
+  async useChance() { // a loss
+    if (!this.uid) { save.chances = Math.max(0, save.chances - 1); persist(); return; }
+    this.chances = Math.max(0, this.chances - 1);
+    try { const r = await this.tx((st) => ({ dBal: 0, chances: Math.max(0, st.chances - 1), earnedT: st.earnedT })); this.chances = r.chances; } catch (e) { this.err = String(e && e.message || e); }
+  },
+  async payChances() { // 2 LionCoin for 20 more chances; true on success
+    if (!this.uid) return false;
+    await this.flush();
+    try {
+      const r = await this.tx((st) => { if (st.bal < CONTINUE_COST / 10 - 1e-9) throw new Error('Insufficient balance'); return { dBal: -CONTINUE_COST / 10, chances: st.chances + DAILY, earnedT: st.earnedT }; });
+      this.chances = r.chances; this.note('arcade_chances', -CONTINUE_COST / 10, 'Wout San Retou arcade: 20 more chances'); return true;
+    } catch (e) { this.err = String(e && e.message || e); return false; }
+  },
+};
+setInterval(() => Acct.flush(), 30000);
+document.addEventListener('visibilitychange', () => { if (document.hidden) Acct.flush(); });
+window.addEventListener('pagehide', () => Acct.flush());
 
 /* ---------- audio: synthesised sfx + MIDI player ---------- */
 const A = {
@@ -410,7 +486,7 @@ function playerHurt(n, fromAngle) {
   if (p.hp <= 0) { p.hp = 0; die(); }
 }
 function die() {
-  G.state = 'dead'; G.deadT = 0; save.chances = Math.max(0, save.chances - 1); persist(); M.play('lose', false);
+  G.state = 'dead'; G.deadT = 0; Acct.useChance().then(() => Acct.flush()); M.play('lose', false);
   if (document.exitPointerLock) document.exitPointerLock();
 }
 
@@ -418,7 +494,7 @@ function killEnt(e, head) {
   e.dead = true; e.deadT = 0; e.hurt = 0;
   A.sfx(e.d.zombie ? 'groan' : 'die', 0.9, 0);
   if (e.d.lost) return;
-  G.kills++; G.weight++; save.coinsT += 1; G.earnedT += 1; persist(); A.sfx('coin', 0.7);
+  G.kills++; G.weight++; Acct.earn(KILL_T); if (Acct.signedIn) G.earnedT += KILL_T; A.sfx('coin', 0.7);
   if (Math.random() < 0.16) G.items.push({ kind: Math.random() < 0.55 ? 'ammo' : 'bottle', x: e.x, y: e.y });
   if (e.d.rise && !e.risen && Math.random() < 0.4) { e.rising = true; e.riseAt = rand(4, 7); }
   if (e.isBoss) { A.sfx('boom', 0.8); if (G.state === 'play') bossDown(e); }
@@ -427,10 +503,10 @@ function bossDown(e) {
   G.ents.forEach((z) => { if (!z.dead && !z.d.lost) { z.dead = true; z.rising = false; z.deadT = 0; } });
   const L = LEVELS[G.lv];
   if (G.lv === 6) { endGame(e.kneelKilled ? 'killed' : 'killed'); return; }
-  G.state = 'clear'; G.clearT = 0; M.play('win', false); save.level = Math.max(save.level, G.lv + 2); persist(); void L;
+  G.state = 'clear'; G.clearT = 0; M.play('win', false); save.level = Math.max(save.level, G.lv + 2); persist(); Acct.flush(); void L;
   if (document.exitPointerLock) document.exitPointerLock();
 }
-function endGame(kind) { G.state = 'ending'; G.endKind = kind; G.clearT = 0; M.play('win', false); save.level = 1; save.best = Math.max(save.best, G.weight); persist(); if (document.exitPointerLock) document.exitPointerLock(); }
+function endGame(kind) { G.state = 'ending'; G.endKind = kind; G.clearT = 0; M.play('win', false); save.level = 1; save.best = Math.max(save.best, G.weight); persist(); Acct.flush(); if (document.exitPointerLock) document.exitPointerLock(); }
 
 function damageEnt(e, n, head) {
   if (e.dead || e.d.lost) return;
@@ -533,7 +609,7 @@ function fire() {
     if (Math.abs(W / 2 - scrX) <= wd * 0.32 + pad && H / 2 >= top - 2 && H / 2 <= bottom) { best = { e, head: H / 2 < top + hgt * 0.26 }; bd = ty; }
   }
   if (best) {
-    if (best.e.d.lost) { showMsg('Never shoot the Lost! Say their name: [E]', 2.5); G.weight += 2; save.coinsT = Math.max(0, save.coinsT - 5); persist(); G.flash = 0.2; A.sfx('hurt', 0.5); }
+    if (best.e.d.lost) { showMsg('Never shoot the Lost! Say their name: [E]', 2.5); G.weight += 2; Acct.penalize(5); G.flash = 0.2; A.sfx('hurt', 0.5); }
     else damageEnt(best.e, 1, best.head);
   }
 }
@@ -543,7 +619,7 @@ function useKey() {
   const k = G.ents.find((e) => e.kneel && !e.dead && Math.hypot(e.x - p.x, e.y - p.y) < 3.2);
   if (k) { endGame('captured'); return; }
   let near = null, nd = 3; G.ents.forEach((e) => { if (e.d.lost && !e.freed) { const d = Math.hypot(e.x - p.x, e.y - p.y); if (d < nd) { nd = d; near = e; } } });
-  if (near) { near.freed = true; near.dead = true; near.deadT = 99; G.weight = Math.max(0, G.weight - 1); G.freed++; save.coinsT += 2; persist(); A.sfx('name'); showMsg('You call the name. A Lost one wakes and walks out. Weight -1.', 2.5); return; }
+  if (near) { near.freed = true; near.dead = true; near.deadT = 99; G.weight = Math.max(0, G.weight - 1); G.freed++; Acct.earn(2); A.sfx('name'); showMsg('You call the name. A Lost one wakes and walks out. Weight -1.', 2.5); return; }
 }
 function drink() { const p = G.player; if (G.state !== 'play' || p.bottles <= 0 || p.hp >= 100) return; p.bottles--; p.hp = 100; A.sfx('drink'); showMsg('You drink. Health restored.', 1.4); }
 
@@ -712,7 +788,7 @@ function drawHUD() {
   ctx.fillStyle = '#000a'; ctx.fillRect(0, 0, W, 20);
   text('LV ' + (G.lv + 1) + ' ' + L.name, 8, 5, 10, '#fff');
   const left = aliveCount(); text(G.bossSpawned ? 'BOSS FIGHT' : 'ENEMIES LEFT ' + left, W / 2, 5, 10, G.bossSpawned ? '#ff6a6a' : '#fff', 'center');
-  text('LIONCOIN ' + coins(save.coinsT) + '   CHANCES ' + save.chances + '/' + DAILY, W - 8, 5, 10, '#ffd34a', 'right');
+  text('LIONCOIN ' + (Acct.signedIn ? coins(Acct.coinsT()) : 'SIGN IN') + '   CHANCES ' + Acct.chancesLeft() + '/' + DAILY, W - 8, 5, 10, '#ffd34a', 'right');
   text('WEIGHT ' + G.weight, 8, 24, 9, '#c9a8ff');
   // boss bar
   if (G.boss && !G.boss.dead) { const b = G.boss; ctx.fillStyle = '#000b'; ctx.fillRect(W / 2 - 110, 38, 220, 12); ctx.fillStyle = '#7a1010'; ctx.fillRect(W / 2 - 108, 40, 216, 8); ctx.fillStyle = '#e83a3a'; ctx.fillRect(W / 2 - 108, 40, 216 * clamp(b.hp / b.maxhp, 0, 1), 8); text(b.d.name.toUpperCase(), W / 2, 51, 9, '#fff', 'center'); }
@@ -730,30 +806,31 @@ function button(label, x, y, w, h, enabled, fn) {
   ctx.fillStyle = !enabled ? '#2a2a38' : sel ? '#7B5CF6' : '#3a2f78'; ctx.fillRect(x, y, w, h); ctx.strokeStyle = sel ? '#fff' : '#9a86ff'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, w, h);
   text(label, x + w / 2, y + h / 2 - 6, 11, enabled ? '#fff' : '#777', 'center');
 }
-function countdown() { const n = new Date(), m = new Date(n.getFullYear(), n.getMonth(), n.getDate() + 1); const s = Math.max(0, Math.floor((m - n) / 1000)); return String(Math.floor(s / 3600)).padStart(2, '0') + ':' + String(Math.floor(s / 60) % 60).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
+function countdown() { const n = new Date(), m = new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate() + 1)); const s = Math.max(0, Math.floor((m - n) / 1000)); return String(Math.floor(s / 3600)).padStart(2, '0') + ':' + String(Math.floor(s / 60) % 60).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
 function drawScreens() {
   ui.buttons = [];
-  if (G.state === 'chances' || G.state === 'tomorrow') { rollDay(); if (save.chances > 0) { G.state = 'menu'; ui.sel = 0; } }
+  Acct.refreshDay();
+  if (G.state === 'chances' || G.state === 'tomorrow') { if (Acct.chancesLeft() > 0) { G.state = 'menu'; ui.sel = 0; } }
   const s = G.state, L = LEVELS[G.lv];
   if (s === 'menu') {
-    rollDay();
     ctx.fillStyle = '#05050fcc'; ctx.fillRect(0, 0, W, H);
     text('WOUT SAN RETOU', W / 2, 24, 30, '#fff', 'center'); text('A R C A D E', W / 2, 60, 18, '#7B5CF6', 'center');
     text('Seven levels, from the yard to the rooftop. Clean each level, then put its boss down.', W / 2, 90, 9, '#ccc', 'center');
-    text('Every kill earns 0.1 LionCoin. You have ' + DAILY + ' chances a day.', W / 2, 104, 9, '#ffd34a', 'center');
-    text('LionCoin is a game score. It has no cash value.', W / 2, 117, 8, '#999', 'center');
-    text('LIONCOIN ' + coins(save.coinsT) + '    CHANCES TODAY ' + save.chances + '/' + DAILY, W / 2, 138, 12, '#ffd34a', 'center');
-    if (save.chances <= 0) {
-      button('OUT OF CHANCES: OPTIONS', W / 2 - 110, 166, 220, 26, true, () => { G.state = 'chances'; ui.sel = 0; });
+    text('Every kill earns 0.1 LionCoin in your OK Music wallet. ' + DAILY + ' chances a day.', W / 2, 104, 9, '#ffd34a', 'center');
+    text(Acct.signedIn ? 'Signed in. The arcade pays up to ' + (DAY_CAP_T / 10).toFixed(0) + ' LionCoin a day.' : 'Guest mode: sign in to OK Music to earn and spend LionCoin.', W / 2, 117, 8, '#999', 'center');
+    text((Acct.signedIn ? 'LIONCOIN ' + coins(Acct.coinsT()) : 'LIONCOIN: GUEST') + '    CHANCES TODAY ' + Acct.chancesLeft() + '/' + DAILY, W / 2, 134, 12, '#ffd34a', 'center');
+    if (Acct.chancesLeft() <= 0) {
+      button('OUT OF CHANCES: OPTIONS', W / 2 - 110, 158, 220, 24, true, () => { G.state = 'chances'; ui.sel = 0; });
     } else {
       const cont = save.level > 1 ? save.level : 0;
-      button(cont ? 'CONTINUE: LEVEL ' + cont : 'START GAME', W / 2 - 110, 160, 220, 26, true, () => { A.init(); A.resume(); startLevel(cont ? cont - 1 : 0); });
-      if (cont) button('NEW GAME', W / 2 - 110, 192, 220, 22, true, () => { A.init(); A.resume(); save.level = 1; persist(); startLevel(0); });
+      button(cont ? 'CONTINUE: LEVEL ' + cont : 'START GAME', W / 2 - 110, 158, 220, 24, true, () => { A.init(); A.resume(); startLevel(cont ? cont - 1 : 0); });
+      if (cont) button('NEW GAME', W / 2 - 110, 186, 220, 20, true, () => { A.init(); A.resume(); save.level = 1; persist(); startLevel(0); });
     }
-    text('WASD move   Shift run   Mouse aim   Click fire   1/2 weapon', W / 2, 228, 8, '#aaa', 'center');
-    text('R reload   H drink   E name a Lost one   M music   Esc pause', W / 2, 240, 8, '#aaa', 'center');
-    text('Mouse not working? Arrow keys turn, Space fires.', W / 2, 252, 8, '#888', 'center');
-    text('Fictional story. Gunfire and horror imagery. Teenagers and older.', W / 2, 270, 8, '#777', 'center');
+    if (!Acct.signedIn) button('SIGN IN TO EARN LIONCOIN', W / 2 - 110, 210, 220, 20, true, () => { window.open('/', '_blank', 'noopener'); });
+    text('WASD move   Shift run   Mouse aim   Click fire   1/2 weapon', W / 2, 238, 8, '#aaa', 'center');
+    text('R reload   H drink   E name a Lost one   M music   Esc pause', W / 2, 249, 8, '#aaa', 'center');
+    text('Mouse not working? Arrow keys turn, Space fires.', W / 2, 260, 8, '#888', 'center');
+    text('Fictional story. Gunfire and horror imagery. Teenagers and older.', W / 2, 276, 8, '#777', 'center');
   } else if (s === 'intro') {
     ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
     text('LEVEL ' + (G.lv + 1), W / 2, 70, 26, '#7B5CF6', 'center'); text(L.name, W / 2, 104, 24, '#fff', 'center');
@@ -767,28 +844,32 @@ function drawScreens() {
     ctx.fillStyle = 'rgba(90,0,0,' + clamp(G.deadT * 0.8, 0, 0.7) + ')'; ctx.fillRect(0, 0, W, H);
     if (G.deadT > 1) {
       panel(170); text('YOU FELL', W / 2, 88, 24, '#ff5a5a', 'center');
-      text('Chances left today: ' + save.chances + ' / ' + DAILY, W / 2, 124, 11, '#fff', 'center');
-      if (save.chances > 0) button('TRY LEVEL ' + (G.lv + 1) + ' AGAIN', W / 2 - 100, 154, 200, 26, true, () => startLevel(G.lv));
+      text('Chances left today: ' + Acct.chancesLeft() + ' / ' + DAILY, W / 2, 124, 11, '#fff', 'center');
+      if (Acct.chancesLeft() > 0) button('TRY LEVEL ' + (G.lv + 1) + ' AGAIN', W / 2 - 100, 154, 200, 26, true, () => startLevel(G.lv));
       else button('NO CHANCES LEFT: OPTIONS', W / 2 - 110, 154, 220, 26, true, () => { G.state = 'chances'; ui.sel = 0; });
     }
   } else if (s === 'chances') {
     ctx.fillStyle = '#05050f'; ctx.fillRect(0, 0, W, H); panel(210);
     text('NO CHANCES LEFT TODAY', W / 2, 72, 18, '#ff5a5a', 'center'); text('You used all ' + DAILY + ' chances.', W / 2, 102, 10, '#fff', 'center');
-    text('Your LionCoin: ' + coins(save.coinsT), W / 2, 120, 12, '#ffd34a', 'center');
-    const can = save.coinsT >= CONTINUE_COST;
-    button('PAY 2 LIONCOIN FOR ' + DAILY + ' MORE CHANCES', W / 2 - 150, 146, 300, 26, can, () => { save.coinsT -= CONTINUE_COST; save.chances += DAILY; persist(); A.sfx('coin'); startLevel(G.lv); });
+    text(Acct.signedIn ? 'Your LionCoin: ' + coins(Acct.coinsT()) : 'Guest: sign in to OK Music to use LionCoin', W / 2, 120, 12, '#ffd34a', 'center');
+    const can = Acct.signedIn && Acct.coinsT() >= CONTINUE_COST && !G.paying;
+    button(G.paying ? 'PAYING...' : 'PAY 2 LIONCOIN FOR ' + DAILY + ' MORE CHANCES', W / 2 - 150, 146, 300, 26, can, () => {
+      G.paying = true; G.payMsg = '';
+      Acct.payChances().then((ok) => { G.paying = false; if (ok) { A.sfx('coin'); startLevel(G.lv); } else G.payMsg = 'Payment failed. Check your balance and connection.'; });
+    });
     button('COME BACK TOMORROW', W / 2 - 150, 180, 300, 26, true, () => { G.state = 'tomorrow'; ui.sel = 0; });
-    if (!can) text('You need 2.0 LionCoin. Earn 0.1 for every kill.', W / 2, 214, 8, '#999', 'center');
+    if (G.payMsg) text(G.payMsg, W / 2, 214, 8, '#ff8a8a', 'center');
+    else if (!Acct.signedIn) button('SIGN IN TO OK MUSIC', W / 2 - 80, 212, 160, 18, true, () => { window.open('/', '_blank', 'noopener'); });
+    else if (!can && !G.paying) text('You need 2.0 LionCoin. Earn 0.1 for every kill.', W / 2, 214, 8, '#999', 'center');
   } else if (s === 'tomorrow') {
-    rollDay(); if (save.chances > 0) { G.state = 'menu'; }
     ctx.fillStyle = '#05050f'; ctx.fillRect(0, 0, W, H); panel(180);
     text('SEE YOU TOMORROW', W / 2, 84, 20, '#fff', 'center'); text('New chances in', W / 2, 122, 11, '#ccc', 'center'); text(countdown(), W / 2, 140, 28, '#ffd34a', 'center');
-    text('Your LionCoin (' + coins(save.coinsT) + ') is saved in this browser.', W / 2, 184, 9, '#aaa', 'center');
-    button('BACK', W / 2 - 60, 206, 120, 22, true, () => { G.state = save.chances > 0 ? 'menu' : 'chances'; ui.sel = 0; });
+    text(Acct.signedIn ? 'Your LionCoin (' + coins(Acct.coinsT()) + ') is in your OK Music wallet.' : 'Sign in to OK Music to keep what you earn.', W / 2, 184, 9, '#aaa', 'center');
+    button('BACK', W / 2 - 60, 206, 120, 22, true, () => { G.state = Acct.chancesLeft() > 0 ? 'menu' : 'chances'; ui.sel = 0; });
   } else if (s === 'clear') {
     ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(0, 0, W, H); panel(200);
     text('LEVEL ' + (G.lv + 1) + ' CLEAN', W / 2, 74, 24, '#7dff9a', 'center'); text(LEVELS[G.lv].bossName + ' IS DOWN', W / 2, 104, 12, '#fff', 'center');
-    text('Kills ' + G.kills + '   LionCoin earned +' + coins(G.earnedT) + '   Total ' + coins(save.coinsT), W / 2, 128, 10, '#ffd34a', 'center');
+    text(Acct.signedIn ? 'Kills ' + G.kills + '   LionCoin earned +' + coins(G.earnedT) + '   Total ' + coins(Acct.coinsT()) : 'Kills ' + G.kills + '   Sign in to OK Music to earn LionCoin', W / 2, 128, 10, '#ffd34a', 'center');
     text('Weight carried: ' + G.weight, W / 2, 146, 10, '#c9a8ff', 'center');
     button('GO UP: LEVEL ' + (G.lv + 2), W / 2 - 90, 172, 180, 26, G.clearT > 1, () => startLevel(G.lv + 1));
   } else if (s === 'ending') {
@@ -798,7 +879,7 @@ function drawScreens() {
     const w = G.weight; const line = w < 70 ? 'You carried it lightly. It was never nothing.' : w < 140 ? 'The weight is heavy. It will walk with you down the stairs.' : 'The weight is crushing. Every one of them was somebody.';
     wrap(line, W / 2, 98, 380, 10, '#c9a8ff', 14);
     wrap(cap ? 'You chose the law over revenge. That is the road of no return that leads somewhere.' : 'You finished it yourself. The road of no return does not give that back.', W / 2, 130, 380, 9, '#aaa', 13);
-    text('Weight ' + G.weight + '   Freed ' + G.freed + '   LionCoin ' + coins(save.coinsT), W / 2, 176, 11, '#ffd34a', 'center');
+    text('Weight ' + G.weight + '   Freed ' + G.freed + (Acct.signedIn ? '   LionCoin ' + coins(Acct.coinsT()) : ''), W / 2, 176, 11, '#ffd34a', 'center');
     button('PLAY AGAIN FROM LEVEL 1', W / 2 - 110, 206, 220, 26, G.clearT > 1, () => { save.level = 1; persist(); startLevel(0); });
     text('Thanks for playing. Source: github.com/tigerlionx/wout-san-retou', W / 2, 250, 8, '#777', 'center');
   }
@@ -852,8 +933,9 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 loadSave();
+Acct.init();
 const q = new URLSearchParams(location.search);
 if (q.get('level')) { A.init(); save.level = clamp(+q.get('level'), 1, 7); }
-window.WSR = { G, save, LEVELS, T, spawnEnt, startLevel, beginPlay, damageEnt, killEnt, update, render, fire, A, M, keys, FIG };
+window.WSR = { G, save, Acct, LEVELS, T, spawnEnt, startLevel, beginPlay, damageEnt, killEnt, update, render, fire, A, M, keys, FIG };
 requestAnimationFrame(frame);
 })();
