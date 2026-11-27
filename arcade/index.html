@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wout San Retou: Arcade — play in your browser</title>
+  <meta name="description" content="A first-person arcade shooter in seven levels, from the yard to the rooftop. Clean each level, put the boss down. Free, in your browser." />
+  <link rel="canonical" href="https://ok-music.net/wout-san-retou/play/" />
+  <meta property="og:title" content="Wout San Retou: Arcade" />
+  <meta property="og:description" content="Seven levels, seven bosses. Play the arcade shooter free in your browser." />
+  <meta property="og:image" content="https://ok-music.net/wout-san-retou/cover.jpg" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { background: #050512; color: #e0e0f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; flex-direction: column; align-items: center; }
+    header { width: 100%; max-width: 1100px; padding: 10px 16px 6px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+    header a { color: #9a86ff; text-decoration: none; font-weight: 700; font-size: 14px; }
+    header a:hover { text-decoration: underline; }
+    #stage { width: 100%; max-width: 1100px; padding: 0 16px; }
+    #wrap { position: relative; width: min(100%, calc((100vh - 150px) * 1.6)); aspect-ratio: 8 / 5; margin: 0 auto; background: #000; border: 2px solid #2a2450; border-radius: 10px; overflow: hidden; }
+    #wrap:fullscreen { width: 100vw; height: 100vh; aspect-ratio: auto; border: 0; border-radius: 0; }
+    #wrap:fullscreen canvas { object-fit: contain; }
+    canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; image-rendering: crisp-edges; cursor: crosshair; background: #000; }
+    .bar { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; padding: 10px 0 4px; }
+    button { background: #3a2f78; color: #fff; border: 1px solid #9a86ff; border-radius: 8px; padding: 8px 14px; font-weight: 700; font-size: 14px; cursor: pointer; }
+    button:hover { background: #7B5CF6; }
+    .note { font-size: 13px; color: rgba(255,255,255,0.55); text-align: center; max-width: 820px; padding: 6px 16px 18px; line-height: 1.5; }
+    .note a { color: #9a86ff; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/wout-san-retou/">&larr; Wout San Retou: The Road of No Return</a>
+    <a href="/">OK Music</a>
+  </header>
+  <div id="stage">
+    <div id="wrap"><canvas id="game" tabindex="0"></canvas></div>
+    <div class="bar">
+      <button id="fs" type="button">Full screen</button>
+      <button id="snd" type="button">Sound: on</button>
+    </div>
+    <p class="note">Desktop keyboard and mouse. WASD move, Shift run, mouse aim, click to fire, 1 and 2 weapons, R reload, H drink, E to name a Lost one, M music, Esc pause.
+      Fictional story with gunfire and horror imagery, for teenagers and older. Every kill earns 0.1 LionCoin, a game score with no cash value, saved in this browser only.
+      Want the full 3D game? <a href="/wout-san-retou/">Download it for Mac and Windows</a>.</p>
+  </div>
+  <script src="game.js"></script>
+  <script>
+    (function () {
+      var wrap = document.getElementById('wrap'), fs = document.getElementById('fs'), snd = document.getElementById('snd');
+      fs.addEventListener('click', function () { if (document.fullscreenElement) document.exitFullscreen(); else if (wrap.requestFullscreen) wrap.requestFullscreen(); });
+      snd.addEventListener('click', function () {
+        var A = window.WSR && window.WSR.A; if (!A) return; A.init(); A.resume(); A.setMuted(!A.muted); snd.textContent = 'Sound: ' + (A.muted ? 'off' : 'on');
+      });
+    })();
+  </script>
+</body>
+</html>
