@@ -6,6 +6,9 @@
 //! patrolling guards and a sniper (they notice, hear, investigate and chase),
 //! or wake the kids by name instead of fighting them.
 
+// On Windows release builds, do not open a console window behind the game.
+#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
