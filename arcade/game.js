@@ -23,7 +23,6 @@ const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; 
 const DAILY = 20;           // chances per day
 const CONTINUE_COST = 20;   // 2.0 LionCoin
 const KILL_T = 1;           // 0.1 LionCoin per kill
-const DAY_CAP_T = 100;      // the arcade pays at most 10.0 LionCoin per day (protects the site's economy; raise it if you want)
 function today() { return new Date().toISOString().slice(0, 10); } // UTC day, same as the site's daily-login reward
 const save = { chances: DAILY, day: today(), level: 1, best: 0 };
 function loadSave() {
@@ -33,7 +32,7 @@ function rollDay() { if (save.day !== today()) { save.day = today(); save.chance
 function persist() { try { localStorage.setItem('wsr_arcade_v1', JSON.stringify(save)); } catch (e) {} }
 
 const Acct = {
-  uid: null, db: null, auth: null, bal: 0, chances: DAILY, earnedT: 0, pendingT: 0, day: today(), err: '', unsub: null, ready: false, capMsg: false,
+  uid: null, db: null, auth: null, bal: 0, chances: DAILY, earnedT: 0, pendingT: 0, day: today(), err: '', unsub: null, ready: false,
   init() {
     try {
       if (typeof fbAuth === 'undefined' || typeof fbDB === 'undefined') return;
@@ -52,13 +51,11 @@ const Acct = {
     });
   },
   get signedIn() { return !!this.uid; },
-  refreshDay() { if (this.day !== today()) { this.day = today(); this.chances = DAILY; this.earnedT = 0; this.capMsg = false; } rollDay(); },
-  payableT() { return Math.max(0, DAY_CAP_T - this.earnedT); },
-  coinsT() { return this.uid ? Math.round(this.bal * 10) + Math.min(this.pendingT, this.payableT()) : 0; },
+  refreshDay() { if (this.day !== today()) { this.day = today(); this.chances = DAILY; this.earnedT = 0; } rollDay(); },
+  coinsT() { return this.uid ? Math.round(this.bal * 10) + this.pendingT : 0; },
   chancesLeft() { this.refreshDay(); return this.uid ? this.chances : save.chances; },
   earn(t) { // a kill, a Lost one woken
     if (!this.uid || t <= 0) return;
-    if (this.payableT() - this.pendingT <= 0 && !this.capMsg) { this.capMsg = true; showMsg('Daily arcade LionCoin cap reached (' + (DAY_CAP_T / 10).toFixed(1) + '). Kills no longer pay today.', 4); }
     this.pendingT += t; if (this.pendingT >= 10) this.flush();
   },
   penalize(t) { if (this.uid) this.pendingT = Math.max(0, this.pendingT - t); },
@@ -80,7 +77,7 @@ const Acct = {
     if (this.flushing) { this.again = true; return; }
     this.flushing = true; const take = this.pendingT; this.pendingT = 0; let paid = 0;
     try {
-      const r = await this.tx((st) => { paid = Math.max(0, Math.min(take, DAY_CAP_T - st.earnedT)); return { dBal: Math.round(paid) / 10, chances: st.chances, earnedT: st.earnedT + paid }; });
+      const r = await this.tx((st) => { paid = take; return { dBal: Math.round(paid) / 10, chances: st.chances, earnedT: st.earnedT + paid }; });
       this.earnedT = r.earnedT; if (paid > 0) this.note('arcade_kills', paid / 10, 'Wout San Retou arcade');
     } catch (e) { this.pendingT += take; this.err = String(e && e.message || e); }
     this.flushing = false;
@@ -817,7 +814,7 @@ function drawScreens() {
     text('WOUT SAN RETOU', W / 2, 24, 30, '#fff', 'center'); text('A R C A D E', W / 2, 60, 18, '#7B5CF6', 'center');
     text('Seven levels, from the yard to the rooftop. Clean each level, then put its boss down.', W / 2, 90, 9, '#ccc', 'center');
     text('Every kill earns 0.1 LionCoin in your OK Music wallet. ' + DAILY + ' chances a day.', W / 2, 104, 9, '#ffd34a', 'center');
-    text(Acct.signedIn ? 'Signed in. The arcade pays up to ' + (DAY_CAP_T / 10).toFixed(0) + ' LionCoin a day.' : 'Guest mode: sign in to OK Music to earn and spend LionCoin.', W / 2, 117, 8, '#999', 'center');
+    text(Acct.signedIn ? 'Signed in. Every kill pays 0.1 LionCoin.' : 'Guest mode: sign in to OK Music to earn and spend LionCoin.', W / 2, 117, 8, '#999', 'center');
     text((Acct.signedIn ? 'LIONCOIN ' + coins(Acct.coinsT()) : 'LIONCOIN: GUEST') + '    CHANCES TODAY ' + Acct.chancesLeft() + '/' + DAILY, W / 2, 134, 12, '#ffd34a', 'center');
     if (Acct.chancesLeft() <= 0) {
       button('OUT OF CHANCES: OPTIONS', W / 2 - 110, 158, 220, 24, true, () => { G.state = 'chances'; ui.sel = 0; });

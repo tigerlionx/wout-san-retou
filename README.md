@@ -65,7 +65,7 @@ and press Play. **It has not been run in Studio yet**, so expect bugs; see [robl
 libraries. Each level ends with its boss. Music is tiny MIDI files (written by `arcade/make_midi.py`) played by a small Web Audio
 synth, and the gunshots are synthesised. Serve the folder (for example `python3 -m http.server --directory arcade`) and open it, or
 play it at <https://ok-music.net/wout-san-retou/play/>. On ok-music.net, a signed-in player earns 0.1 LionCoin per kill in their OK Music
-wallet (up to 10 a day), gets 20 chances a day, and can pay 2 LionCoin for 20 more. LionCoin is the site's in-app credit with no cash
+wallet, gets 20 chances a day, and can pay 2 LionCoin for 20 more. LionCoin is the site's in-app credit with no cash
 value. Guests can play but earn nothing. The wallet link needs OK Music's Firebase scripts (`/firebase-init.js`), so a copy served
 from anywhere else runs in guest mode.
 
