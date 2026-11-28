@@ -2,10 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <meta name="mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="theme-color" content="#050512" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Wout San Retou: Arcade — play in your browser</title>
   <meta name="description" content="A first-person arcade shooter in seven levels, from the yard to the rooftop. Clean each level, put the boss down. Free, in your browser." />
   <link rel="canonical" href="https://ok-music.net/wout-san-retou/play/" />
@@ -23,7 +20,12 @@
     #wrap { position: relative; width: min(100%, calc((100vh - 150px) * 1.6)); aspect-ratio: 8 / 5; margin: 0 auto; background: #000; border: 2px solid #2a2450; border-radius: 10px; overflow: hidden; }
     #wrap:fullscreen { width: 100vw; height: 100vh; aspect-ratio: auto; border: 0; border-radius: 0; }
     #wrap:fullscreen canvas { object-fit: contain; }
-    canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; image-rendering: crisp-edges; cursor: crosshair; background: #000; }
+    canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; image-rendering: crisp-edges; cursor: crosshair; background: #000; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+    /* phone held sideways: the game fills the screen */
+    @media (pointer: coarse) and (orientation: landscape) {
+      body { overflow: hidden; }
+      #wrap { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(100vw, 160vh); width: min(100vw, 160dvh); border: 0; border-radius: 0; z-index: 10; }
+    }
     .bar { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; padding: 10px 0 4px; }
     button { background: #3a2f78; color: #fff; border: 1px solid #9a86ff; border-radius: 8px; padding: 8px 14px; font-weight: 700; font-size: 14px; cursor: pointer; }
     button:hover { background: #7B5CF6; }
@@ -42,20 +44,19 @@
       <button id="fs" type="button">Full screen</button>
       <button id="snd" type="button">Sound: on</button>
     </div>
-    <p class="note">Works on computers, phones and tablets. Computer: WASD move, Shift run, mouse aim, click to fire, hold Z to hide behind sandbags, 1 to 6 weapons (knife, Glock, Magnum 747, shotgun, AK-47, grenade), B AK auto or single, R reload, F knife, G grenade, H drink, E to name a Lost one, M music, Esc pause. Phone or tablet: left thumb moves, right thumb looks, FIRE shoots, hold HIDE to hide behind cover. Turn the phone sideways for the best view.
-      Fictional story with gunfire and horror imagery, for teenagers and older. Every kill earns 0.1 LionCoin in your OK Music wallet when you are signed in, and you get 20 chances a day. 2 LionCoin buys 20 more. As a guest you can play but earn nothing. Want the full 3D game? <a href="/wout-san-retou/">Download it for Mac and Windows</a>.</p>
+    <p class="note">On a phone, hold it sideways: left thumb moves, right thumb looks, and the buttons fire, hide, throw a grenade and pick a weapon. On a computer: WASD move, Shift run, mouse aim, click to fire, hold Z or C to hide (bullets cannot hit you while you hide, but you cannot shoot; on a French AZERTY keyboard the Z key walks forward, so hold W or C), 1 Magnum 747, 2 AK-47, 3 shotgun, 4 or G grenade, R reload, H drink, E to name a Lost one, M music, Esc pause.
+      Fictional story with gunfire and horror imagery, for teenagers and older. Every kill earns 1 LionCoin in your OK Music wallet when you are signed in, and you get 20 chances a day. 2 LionCoin buys 20 more. As a guest you can play but earn nothing. Want the full 3D game? <a href="/wout-san-retou/">Download it for Mac and Windows</a>.</p>
   </div>
   <!-- Same Firebase project as OK Music: the arcade pays and charges the player's real LionCoin wallet when signed in. -->
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
   <script src="/firebase-init.js?v=13"></script>
-  <script src="game.js?v=4"></script>
+  <script src="game.js?v=11"></script>
   <script>
     (function () {
       var wrap = document.getElementById('wrap'), fs = document.getElementById('fs'), snd = document.getElementById('snd');
-      var canFs = !!(wrap.requestFullscreen || wrap.webkitRequestFullscreen); if (!canFs) fs.style.display = 'none';
-      fs.addEventListener('click', function () { if (document.fullscreenElement || document.webkitFullscreenElement) { (document.exitFullscreen || document.webkitExitFullscreen).call(document); } else if (wrap.requestFullscreen) wrap.requestFullscreen(); else if (wrap.webkitRequestFullscreen) wrap.webkitRequestFullscreen(); });
+      fs.addEventListener('click', function () { if (document.fullscreenElement) document.exitFullscreen(); else if (wrap.requestFullscreen) wrap.requestFullscreen(); });
       snd.addEventListener('click', function () {
         var A = window.WSR && window.WSR.A; if (!A) return; A.init(); A.resume(); A.setMuted(!A.muted); snd.textContent = 'Sound: ' + (A.muted ? 'off' : 'on');
       });
